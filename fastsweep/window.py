@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QSettings, QSize, QTimer, Qt
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__, updater
 from .backdrop import ACRYLIC, apply_backdrop, prepare_translucency, set_dark_title_bar
 from .cleanup import (
     backup_registry_keys,
@@ -48,6 +49,7 @@ from .models import AppEntry, FileCandidate, RegistryCandidate
 from .restore_page import RestorePointsPage
 from .system import is_admin, is_windows, relaunch_as_admin
 from .theme import colors, theme_stylesheet
+from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_DISMISSED, UpdateDialog, UpdateTask, describe_error
 from .uninstall import (
     REBOOT_EXIT_CODES,
     RESTORE_POINT_ERROR_PREFIX,
@@ -117,9 +119,19 @@ class LeftoverScan:
         self.label = ", ".join(app.name for app in self.apps)
 
 
+STARTUP_UPDATE_DELAY_MS = 2500  # laisse la liste s'afficher avant de joindre GitHub / lets the list appear before reaching GitHub
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, check_updates: bool = False):
+        """``check_updates`` : chercher une mise à jour au démarrage (selon le réglage) ; désactivé par défaut pour les tests.
+
+        ``check_updates``: look for an update at startup (according to the setting); off by default for the tests.
+        """
         super().__init__()
+        self.check_updates = check_updates
+        self.update_info: updater.UpdateInfo | None = None  # dernière version plus récente connue / latest newer version known
+        self._update_task: UpdateTask | None = None
         self.settings = open_settings()
         migrate_legacy_settings(self.settings)
         self.lang = self.settings.value("language", "fr")
@@ -216,9 +228,10 @@ class MainWindow(QMainWindow):
         side.addSpacing(6)
         self.restore_backup_btn = NavButton()
         self.history_btn = NavButton()
+        self.update_btn = NavButton()
         self.about_btn = NavButton()
         for button, slot in ((self.restore_backup_btn, self.restore_backup), (self.history_btn, self.show_history),
-                             (self.about_btn, self.show_about)):
+                             (self.update_btn, self.show_updates), (self.about_btn, self.show_about)):
             button.setCheckable(False)  # actions, pas des pages / actions, not pages
             button.clicked.connect(slot)
             side.addWidget(button)
@@ -361,6 +374,7 @@ class MainWindow(QMainWindow):
         self.system_label.setText(self.t("system_section"))
         self.restore_nav.setText(self.t("restore_points"))
         self.about_btn.setText(self.t("about"))
+        self.refresh_update_button()
         self.restore_backup_btn.setText(self.t("restore_backup"))
         self.history_btn.setText(self.t("history"))
         if self.restore_active:
@@ -414,6 +428,7 @@ class MainWindow(QMainWindow):
             button.setIcon(glyph_icon(name, c["text"], c["accent"]))  # accent quand la page est active / accent when active
             button.set_accent(QColor(c["accent"]))
         for button, name in ((self.restore_backup_btn, "undo"), (self.history_btn, "history"), (self.about_btn, "info"),
+                             (self.update_btn, "download"),
                              (self.refresh_btn, "refresh"), (self.scan_btn, "search"), (self.elevate_btn, "shield"),
                              (self.theme_btn, "sun" if self.dark else "moon")):
             button.setIcon(glyph_icon(name, c["text"]))
@@ -450,6 +465,8 @@ class MainWindow(QMainWindow):
         if self._backdrop_checked:
             return
         self._backdrop_checked = True
+        if self.check_updates:
+            QTimer.singleShot(STARTUP_UPDATE_DELAY_MS, self.startup_update_check)
         # Acrylic au premier affichage (on voit, flouté, ce qui est derrière la fenêtre) ; si Windows le refuse, thème opaque.
         # Acrylic on first show (what lies behind the window shows through, blurred); if Windows refuses it, opaque theme.
         if self._translucent and not apply_backdrop(self, ACRYLIC, self.dark):
@@ -1042,6 +1059,106 @@ class MainWindow(QMainWindow):
             box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             box.setStyleSheet(theme_stylesheet(self.dark))
             box.exec()
+
+    # --- Mises à jour / Updates ---------------------------------------------------------------------
+
+    def refresh_update_button(self) -> None:
+        """Le bouton du volet annonce la version disponible quand il y en a une.
+
+        The sidebar button announces the available version when there is one.
+        """
+        info = self.update_info
+        self.update_btn.setText(self.t("update_nav_new" if info else "update_nav"))
+        self.update_btn.setToolTip(self.t("update_available").format(version=info.version) if info else "")
+        self.update_btn.setProperty("highlight", bool(info))
+        self.update_btn.style().unpolish(self.update_btn)
+        self.update_btn.style().polish(self.update_btn)
+
+    def set_update_info(self, info: updater.UpdateInfo | None) -> None:
+        self.update_info = info if info is not None and info.newer else None
+        self.refresh_update_button()
+
+    def startup_update_check(self) -> None:
+        """Recherche silencieuse au démarrage : une erreur réseau (hors ligne…) ne dérange jamais l'utilisateur.
+
+        Silent startup lookup: a network error (offline…) never bothers the user.
+        """
+        if not self.settings.value(SETTING_AUTO_CHECK, True, type=bool) or self._update_task is not None:
+            return
+        task = self._update_task = UpdateTask(self)
+        task.done.connect(self.startup_update_found)
+        task.failed.connect(self.startup_update_failed)
+        task.start(lambda progress, stop: updater.check_latest())
+
+    def startup_update_failed(self, key: str, detail: str) -> None:
+        self._update_task = None
+
+    def startup_update_found(self, info: updater.UpdateInfo) -> None:
+        self._update_task = None
+        self.set_update_info(info)
+        if not info.newer:
+            return
+        if (self.settings.value(SETTING_AUTO_INSTALL, False, type=bool) and info.installable
+                and not updater.self_update_problem() and not self._busy):
+            self.start_auto_install(info)
+        elif self.settings.value(SETTING_DISMISSED, "") != info.version:
+            # Proposée une seule fois par version : « Fermer » vaut « plus tard », le bouton du volet reste là.
+            # Offered once per version: "Close" means "later", the sidebar button stays.
+            self.settings.setValue(SETTING_DISMISSED, info.version)
+            self.show_updates()
+
+    def start_auto_install(self, info: updater.UpdateInfo) -> None:
+        exe = updater.current_executable()
+        target = updater.staged_path(exe)
+        self.status_label.setText(self.t("update_installing").format(version=info.version))
+        task = self._update_task = UpdateTask(self)
+        task.done.connect(self.auto_update_downloaded)
+        task.failed.connect(self.auto_update_failed)
+        task.start(lambda progress, stop: updater.download(info, target, progress, stop))
+
+    def auto_update_downloaded(self, staged) -> None:
+        self._update_task = None
+        self.apply_update(staged)
+
+    def auto_update_failed(self, key: str, detail: str) -> None:
+        self._update_task = None
+        self.status_label.setText(describe_error(STRINGS[self.lang], key, detail)[:180])
+
+    def show_updates(self) -> None:
+        dialog = UpdateDialog(self, self.dark, self.lang, self.settings, self.update_info)
+        dialog.exec()
+        if dialog.info is not None:
+            self.set_update_info(dialog.info)
+        if dialog.staged is not None:
+            self.apply_update(dialog.staged)
+
+    def apply_update(self, staged) -> None:
+        """Remplace l'exécutable par la version téléchargée et vérifiée, puis relance FastSweep.
+
+        Replaces the executable with the downloaded, verified version, then restarts FastSweep.
+        """
+        exe = updater.current_executable()
+        if exe is None:
+            return
+        if self._busy:  # le fichier téléchargé reste, il sera repris à la prochaine mise à jour / the file stays, it is reused at the next update
+            QMessageBox.information(self, APP_NAME, self.t("update_wait_busy"))
+            return
+        version = self.update_info.version if self.update_info else ""
+        self.status_label.setText(self.t("update_installing").format(version=version))
+        try:
+            updater.install(staged, exe)
+        except updater.UpdateError as exc:
+            self.record_history("FastSweep", "update", "failed", {"from": __version__, "to": version, "error": str(exc)})
+            QMessageBox.critical(self, APP_NAME, self.t("update_install_error").format(
+                error=describe_error(STRINGS[self.lang], exc.key, exc.detail)))
+            return
+        self.record_history("FastSweep", "update", "success", {"from": __version__, "to": version})
+        try:
+            updater.restart(exe)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, self.t("update_restart_error").format(error=exc))
+            return
+        self.close()
 
     def show_about(self) -> None:
         QMessageBox.about(self, self.t("about"), self.t("about_text"))

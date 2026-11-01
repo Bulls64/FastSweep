@@ -37,6 +37,7 @@ ICONS = {
     "timeline": ('<path d="M6 3v14"/><circle cx="6" cy="5" r="1.6"/><circle cx="6" cy="10" r="1.6"/>'
                  '<circle cx="6" cy="15" r="1.6"/><path d="M10 5h7M10 10h7M10 15h5"/>'),
     "lock": '<rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/>',
+    "download": '<path d="M10 3v9M6 8l4 4 4-4M4 16h12"/>',
     "plus": '<path d="M10 4v12M4 10h12"/>',
 }
 

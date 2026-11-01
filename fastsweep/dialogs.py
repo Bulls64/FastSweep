@@ -271,7 +271,8 @@ class FileResidueDialog(CandidateDialog):
 class HistoryDialog(FluentDialog):
     MAX_ROWS = 500
     OPERATION_KEYS = {"uninstall": "history_uninstall", "registry": "history_registry", "files": "history_files",
-                      "restore_point": "history_restore_point", "restore_create": "history_restore_create"}
+                      "restore_point": "history_restore_point", "restore_create": "history_restore_create",
+                      "update": "history_update"}
     STATUS_KEYS = {"success": "history_success", "partial": "history_partial", "failed": "history_failed"}
 
     def __init__(self, parent: QWidget | None, dark: bool, lang: str):

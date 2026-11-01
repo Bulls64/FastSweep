@@ -57,6 +57,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 **Interface**
 - WinUI 3 style, light and dark themes, English and French.
 - Acrylic translucency on Windows 11 22H2 and later. Older versions keep the same colors on opaque backgrounds.
+- **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from the sidebar. It shows what's new, downloads `FastSweep.exe`, verifies it (size, SHA-256 checksum, file type, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
 - Local history of every operation, which can be exported to JSON.
 - Uninstall options (restore point, silent mode, automatic scan) are remembered between sessions.
 
@@ -68,6 +69,8 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 | Restore points, newest one protected | Rule-based cleanup with preview |
 | <img src="docs/screenshots/queue-dark-en.png" alt="Uninstall queue" width="420"> | <img src="docs/screenshots/leftovers-dark-en.png" alt="Registry leftovers" width="420"> |
 | Uninstall queue in silent mode | Registry leftovers, sorted by confidence |
+| <img src="docs/screenshots/update-dark-en.png" alt="Update window" width="420"> | <img src="docs/screenshots/update-progress-dark-en.png" alt="Update download" width="420"> |
+| Update available, with release notes | Verified download before installing |
 
 ### Requirements
 
@@ -78,7 +81,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 
 ### Download
 
-`FastSweep.exe` is attached to each [release](https://github.com/Bulls64/FastSweep/releases): download it and run it, no installation needed.
+`FastSweep.exe` is attached to each [release](https://github.com/Bulls64/FastSweep/releases): download it and run it, no installation needed. Once installed, FastSweep updates itself from these releases (see **Updates from GitHub** above). Only the downloaded executable can replace itself: a copy run from source reports new versions but does not install them, and the update needs write access to the folder holding `FastSweep.exe`.
 
 ### Running from source
 
@@ -126,6 +129,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/uninstall.py` | Uninstallers, UAC fallback, process tracking, restore point creation |
 | `fastsweep/cleanup.py` | Registry and file leftovers, backups, Recycle Bin |
 | `fastsweep/restore_points.py` | Listing and deleting restore points, protection of the newest |
+| `fastsweep/updater.py`, `update_ui.py` | Update from GitHub releases: lookup, verified download, executable swap; update window |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | WinUI components, themes, icons, Acrylic |
 | `fastsweep/i18n.py` | English and French texts |
@@ -175,6 +179,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 **Interface**
 - Style WinUI 3, thèmes clair et sombre, français et anglais.
 - Transparence Acrylic sous Windows 11 22H2 et plus récent. Les versions plus anciennes gardent les mêmes couleurs sur des fonds opaques.
+- **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis le volet. Il affiche les nouveautés, télécharge `FastSweep.exe`, le vérifie (taille, somme SHA-256, type de fichier, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
 - Historique local de toutes les opérations, exportable en JSON.
 - Les options de désinstallation (point de restauration, mode silencieux, analyse automatique) sont mémorisées d'une session à l'autre.
 
@@ -186,6 +191,8 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 | Points de restauration, le plus récent protégé | Nettoyage par règle avec aperçu |
 | <img src="docs/screenshots/queue-dark-fr.png" alt="File de désinstallation" width="420"> | <img src="docs/screenshots/leftovers-dark-fr.png" alt="Résidus de registre" width="420"> |
 | File de désinstallation en mode silencieux | Résidus de registre classés par confiance |
+| <img src="docs/screenshots/update-dark-fr.png" alt="Fenêtre de mise à jour" width="420"> | <img src="docs/screenshots/update-progress-dark-fr.png" alt="Téléchargement de la mise à jour" width="420"> |
+| Mise à jour disponible, avec les nouveautés | Téléchargement vérifié avant installation |
 
 ### Configuration requise
 
@@ -196,7 +203,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 
 ### Téléchargement
 
-`FastSweep.exe` est joint à chaque [release](https://github.com/Bulls64/FastSweep/releases) : téléchargez-le et lancez-le, sans installation.
+`FastSweep.exe` est joint à chaque [release](https://github.com/Bulls64/FastSweep/releases) : téléchargez-le et lancez-le, sans installation. Ensuite, FastSweep se met à jour tout seul depuis ces releases (voir **Mises à jour depuis GitHub** ci-dessus). Seul l'exécutable téléchargé peut se remplacer lui-même : une copie lancée depuis les sources signale les nouvelles versions sans les installer, et la mise à jour demande l'accès en écriture au dossier qui contient `FastSweep.exe`.
 
 ### Lancer depuis les sources
 
@@ -244,6 +251,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/uninstall.py` | Désinstalleurs, repli UAC, suivi des processus, création des points de restauration |
 | `fastsweep/cleanup.py` | Résidus du registre et des fichiers, sauvegardes, Corbeille |
 | `fastsweep/restore_points.py` | Lecture et suppression des points de restauration, protection du plus récent |
+| `fastsweep/updater.py`, `update_ui.py` | Mise à jour depuis les releases GitHub : recherche, téléchargement vérifié, remplacement de l'exécutable ; fenêtre de mise à jour |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | Composants WinUI, thèmes, icônes, Acrylic |
 | `fastsweep/i18n.py` | Textes français et anglais |

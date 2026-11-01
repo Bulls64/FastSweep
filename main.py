@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from fastsweep import __version__
+from fastsweep import __version__, updater
 from fastsweep.i18n import APP_NAME, STRINGS
 from fastsweep.system import is_windows, migrate_legacy_data
 
@@ -32,6 +32,7 @@ def main() -> int:
 
     from fastsweep.window import MainWindow
 
+    updater.cleanup_leftovers()  # reste d'une mise à jour précédente (ancienne version) / leftover of a previous update (old version)
     migrate_legacy_data()  # historique et sauvegardes de l'ancien nom / history and backups of the former name
     app = QApplication(sys.argv)
     # Fusion : base neutre et prévisible pour les feuilles de style WinUI de FastSweep.
@@ -44,7 +45,7 @@ def main() -> int:
     icon = resource_path("assets/fastsweep.ico")
     if icon.is_file():
         app.setWindowIcon(QIcon(str(icon)))
-    window = MainWindow()
+    window = MainWindow(check_updates=True)
     window.show()
     return app.exec()
 

@@ -124,6 +124,7 @@ def theme_stylesheet(dark: bool, translucent: bool = False) -> str:
         QPushButton#subtleButton:hover, QPushButton#navButton:hover {{ background: {c["subtleHover"]}; }}
         QPushButton#subtleButton:pressed, QPushButton#navButton:pressed {{ background: {c["subtlePressed"]}; color: {c["text"]}; }}
         QPushButton#navButton {{ text-align: left; padding: 10px 12px; }}
+        QPushButton#navButton[highlight="true"] {{ color: {c["accent"]}; font-weight: 600; }}
         QPushButton#navButton:checked {{ background: {c["navSel"]}; font-weight: 600; }}
 
         QLineEdit {{ background: {c["ctl"]}; border: 1px solid {c["ctlStroke"]}; border-bottom: 1px solid {c["ctlBottom"]};
@@ -158,6 +159,7 @@ def theme_stylesheet(dark: bool, translucent: bool = False) -> str:
         QSpinBox::up-arrow {{ image: url("{chevron_up}"); width: 10px; height: 10px; }}
         QSpinBox::down-arrow {{ image: url("{chevron}"); width: 10px; height: 10px; }}
 
+        QTextBrowser {{ background: {c["card"]}; border: 1px solid {c["cardStroke"]}; border-radius: 4px; padding: 8px; }}
         #card {{ background: {c["card"]}; border: 1px solid {c["cardStroke"]}; border-radius: 8px; }}
         QTableWidget {{ background: transparent; border: none; outline: 0; gridline-color: transparent;
                         selection-background-color: transparent; selection-color: {c["text"]}; }}

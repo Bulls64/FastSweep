@@ -1,5 +1,9 @@
 import base64
 import faulthandler
+import hashlib
+import io
+import threading
+import urllib.error
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -17,7 +21,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 from fastsweep import backdrop, cleanup, dialogs, glyphs, history, i18n, icons, inventory, models, system, theme, uninstall, widgets, workers
-from fastsweep import restore_page, restore_points
+from fastsweep import restore_page, restore_points, update_ui, updater
 from fastsweep import window as main_window
 
 
@@ -1326,6 +1330,456 @@ class HelperTests(unittest.TestCase):
         self.assertEqual((window.settings.value("rp_rule"), int(window.settings.value("rp_rule_keep"))), ("keep", 1))
         self.assertFalse(page.rule_btn.isEnabled())  # un seul point restant : rien à nettoyer / one point left: nothing to clean
         window.close()
+
+
+    # --- Mise à jour depuis GitHub / Update from GitHub -------------------------------------------------
+
+    class FakeResponse:
+        """Réponse HTTP minimale : read(), geturl(), headers et gestionnaire de contexte.
+
+        Minimal HTTP response: read(), geturl(), headers and context manager.
+        """
+
+        def __init__(self, data: bytes, url: str = "https://release-assets.githubusercontent.com/abc"):
+            self.data, self.url = io.BytesIO(data), url
+            self.headers = {"Content-Length": str(len(data))}
+
+        def read(self, size=-1):
+            return self.data.read(size)
+
+        def geturl(self):
+            return self.url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    EXE = b"MZ" + b"\x90" * 5000
+    ASSET_URL = updater.DOWNLOAD_PREFIX + "v1.0.2/FastSweep.exe"
+
+    def release_json(self, tag="v1.0.2", assets="default", body="### v1.0.2\n- Nouveau"):
+        if assets == "default":
+            assets = [{"name": "FastSweep.exe", "state": "uploaded", "size": len(self.EXE), "browser_download_url": self.ASSET_URL,
+                       "digest": "sha256:" + hashlib.sha256(self.EXE).hexdigest().upper()}]
+        return {"tag_name": tag, "body": body, "html_url": "https://github.com/Bulls64/FastSweep/releases/tag/" + tag, "assets": assets}
+
+    def with_release(self, data):
+        return patch.object(updater, "open_url", return_value=self.FakeResponse(json.dumps(data).encode()))
+
+    def info(self, **changes):
+        base = dict(version="1.0.2", tag="v1.0.2", notes="- Nouveau", url=self.ASSET_URL, size=len(self.EXE),
+                    sha256=hashlib.sha256(self.EXE).hexdigest(), page=updater.RELEASES_URL, newer=True)
+        base.update(changes)
+        return updater.UpdateInfo(**base)
+
+    def test_versions_are_compared_numerically(self):
+        self.assertEqual(updater.parse_version("v1.0.10"), (1, 0, 10))
+        self.assertEqual(updater.parse_version("nope"), ())
+        self.assertTrue(updater.is_newer("1.0.10", "1.0.9"))  # pas alphabétique / not alphabetical
+        self.assertTrue(updater.is_newer("v1.1", "1.0.9"))
+        self.assertFalse(updater.is_newer("1.0", "1.0.0"))
+        self.assertFalse(updater.is_newer("1.0.1", "1.0.1"))
+        self.assertFalse(updater.is_newer("1.0.0", "1.0.1"))
+        self.assertFalse(updater.is_newer("", "1.0.1"))
+
+    def test_check_latest_reads_the_release_and_its_checksum(self):
+        with self.with_release(self.release_json()) as opened:
+            info = updater.check_latest("1.0.1")
+        self.assertEqual((info.version, info.newer, info.installable, info.size), ("1.0.2", True, True, len(self.EXE)))
+        self.assertEqual(info.sha256, hashlib.sha256(self.EXE).hexdigest())  # normalisée en minuscules / lowercased
+        self.assertIn("Nouveau", info.notes)
+        request = opened.call_args.args[0]
+        self.assertEqual(request.full_url, updater.API_LATEST)
+        self.assertIn("FastSweep/", request.get_header("User-agent"))
+
+    def test_check_latest_handles_up_to_date_and_missing_exe(self):
+        with self.with_release(self.release_json("v1.0.1")):
+            self.assertFalse(updater.check_latest("1.0.1").newer)
+        with self.with_release(self.release_json(assets=[])):
+            info = updater.check_latest("1.0.1")
+        self.assertTrue(info.newer)
+        self.assertFalse(info.installable)  # publiée mais l'exe n'est pas encore joint / published but the exe is not attached yet
+
+    def test_check_latest_ignores_download_links_from_other_places(self):
+        foreign = [{"name": "FastSweep.exe", "state": "uploaded", "size": 5, "browser_download_url": "https://evil.example/FastSweep.exe"}]
+        with self.with_release(self.release_json(assets=foreign)):
+            self.assertEqual(updater.check_latest("1.0.1").url, "")
+        pending = [{"name": "FastSweep.exe", "state": "open", "size": 5, "browser_download_url": self.ASSET_URL}]
+        with self.with_release(self.release_json(assets=pending)):  # envoi en cours / upload in progress
+            self.assertEqual(updater.check_latest("1.0.1").url, "")
+        with self.with_release(self.release_json(assets=[{"name": "FastSweep.exe", "browser_download_url": self.ASSET_URL}])):
+            self.assertEqual(updater.check_latest("1.0.1").sha256, "")  # pas d'empreinte fournie / no checksum given
+
+    def test_check_latest_reports_each_failure_with_its_own_key(self):
+        def fails(error):
+            with patch.object(updater, "open_url", side_effect=error):
+                with self.assertRaises(updater.UpdateError) as caught:
+                    updater.check_latest("1.0.1")
+            return caught.exception.key
+        http = lambda code: urllib.error.HTTPError(updater.API_LATEST, code, "x", {}, None)
+        self.assertEqual(fails(http(403)), "update_err_rate")
+        self.assertEqual(fails(http(429)), "update_err_rate")
+        self.assertEqual(fails(http(404)), "update_err_none")
+        self.assertEqual(fails(http(500)), "update_err_network")
+        self.assertEqual(fails(urllib.error.URLError("no route")), "update_err_network")
+        self.assertEqual(fails(TimeoutError("slow")), "update_err_network")
+        for bad in (b"not json", b"[]", json.dumps({"tag_name": "latest"}).encode()):
+            with patch.object(updater, "open_url", return_value=self.FakeResponse(bad)):
+                with self.assertRaises(updater.UpdateError) as caught:
+                    updater.check_latest("1.0.1")
+            self.assertEqual(caught.exception.key, "update_err_data")
+
+    def download(self, info=None, data=None, url="https://release-assets.githubusercontent.com/abc", **kwargs):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "FastSweep.exe.new"
+            response = self.FakeResponse(self.EXE if data is None else data, url)
+            error = None
+            with patch.object(updater, "open_url", return_value=response):
+                try:
+                    updater.download(info or self.info(), target, **kwargs)
+                except updater.UpdateError as exc:
+                    error = exc.key
+            leftovers = sorted(path.name for path in Path(temporary).iterdir())
+            return error, leftovers, (target.read_bytes() if target.exists() else None)
+
+    def test_download_keeps_the_file_only_when_everything_checks_out(self):
+        seen = []
+        error, leftovers, content = self.download(progress=lambda done, total: seen.append((done, total)))
+        self.assertIsNone(error)
+        self.assertEqual((leftovers, content), (["FastSweep.exe.new"], self.EXE))  # pas de .part / no .part
+        self.assertEqual(seen[-1], (len(self.EXE), len(self.EXE)))
+
+    def test_download_rejects_a_bad_file_and_leaves_nothing_behind(self):
+        for label, kwargs, key in (
+            ("somme", dict(info=self.info(sha256="0" * 64)), "update_err_hash"),
+            ("taille", dict(info=self.info(size=len(self.EXE) + 1)), "update_err_size"),
+            ("type", dict(data=b"PK" + b"\x00" * 5000, info=self.info(size=5002, sha256="")), "update_err_notexe"),
+            ("hôte", dict(url="https://evil.example/FastSweep.exe"), "update_err_host"),
+            ("http", dict(url="http://objects.githubusercontent.com/x"), "update_err_host"),
+            ("absent", dict(info=self.info(url="")), "update_no_exe"),
+            ("hors dépôt", dict(info=self.info(url="https://github.com/Other/Repo/releases/download/v1/FastSweep.exe")), "update_no_exe"),
+        ):
+            with self.subTest(label):
+                error, leftovers, content = self.download(**kwargs)
+                self.assertEqual(error, key)
+                self.assertEqual((leftovers, content), ([], None))
+
+    def test_download_can_be_cancelled(self):
+        stop = threading.Event()
+        stop.set()
+        error, leftovers, _content = self.download(stop=stop)
+        self.assertEqual((error, leftovers), ("update_err_cancelled", []))
+
+    def make_install(self, temporary):
+        exe = Path(temporary) / "FastSweep.exe"
+        exe.write_bytes(b"MZ-old")
+        staged = updater.staged_path(exe)
+        staged.write_bytes(b"MZ-new")
+        return exe, staged
+
+    def test_install_swaps_the_executable_and_keeps_the_old_one_aside(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            updater.install(staged, exe)
+            self.assertEqual(exe.read_bytes(), b"MZ-new")
+            self.assertEqual(exe.with_name("FastSweep.exe.old").read_bytes(), b"MZ-old")
+            self.assertFalse(staged.exists())
+
+    def test_install_puts_the_old_version_back_when_it_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            with patch.object(updater.os, "replace", side_effect=PermissionError("verrouillé")):
+                with self.assertRaises(updater.UpdateError) as caught:
+                    updater.install(staged, exe)
+            self.assertEqual(caught.exception.key, "update_err_write")
+            self.assertEqual(exe.read_bytes(), b"MZ-old")  # l'application reste utilisable / the app stays usable
+            self.assertTrue(staged.exists())
+
+    def test_leftovers_are_cleaned_but_the_executable_is_not(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, _staged = self.make_install(temporary)
+            exe.with_name("FastSweep.exe.old").write_bytes(b"x")
+            exe.with_name("FastSweep.exe.part").write_bytes(b"x")
+            keep = Path(temporary) / "FastSweep.exe.bak"  # pas à nous : jamais touché / not ours: never touched
+            keep.write_bytes(b"x")
+            updater.cleanup_leftovers(exe)
+            self.assertEqual(sorted(path.name for path in Path(temporary).iterdir()), ["FastSweep.exe", "FastSweep.exe.bak"])
+
+    def test_restart_resets_the_pyinstaller_environment(self):
+        with patch.object(updater.subprocess, "Popen") as popen:
+            updater.restart(Path("C:/Apps/FastSweep.exe"))
+        self.assertEqual(popen.call_args.args[0], [str(Path("C:/Apps/FastSweep.exe"))])
+        self.assertEqual(popen.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_only_the_built_executable_can_replace_itself(self):
+        self.assertEqual(updater.self_update_problem(), "update_from_source")  # lancé avec python / run with python
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(updater, "is_windows", return_value=True), \
+                patch.object(updater.sys, "frozen", True, create=True), \
+                patch.object(updater.sys, "executable", str(Path(temporary) / "FastSweep.exe")):
+            self.assertEqual(updater.self_update_problem(), "")
+            with patch.object(updater.os, "access", return_value=False):
+                self.assertEqual(updater.self_update_problem(), "update_not_writable")
+
+    def wait_until(self, condition, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            self.qt_app.processEvents()
+            QTest.qWait(10)
+        return condition()
+
+    def test_update_task_delivers_results_in_the_interface_thread(self):
+        class Receiver(update_ui.QObject):
+            def __init__(self):
+                super().__init__()
+                self.threads = []
+            def got(self, *_args):
+                self.threads.append(threading.get_ident())
+        receiver, task = Receiver(), update_ui.UpdateTask()
+        worker = []
+        task.done.connect(receiver.got)
+        task.progress.connect(receiver.got)
+        task.start(lambda progress, stop: (worker.append(threading.get_ident()), progress(1, 2), "ok")[-1])
+        self.assertTrue(self.wait_until(lambda: len(receiver.threads) == 2))
+        self.assertEqual(set(receiver.threads), {threading.get_ident()})
+        self.assertNotEqual(worker[0], threading.get_ident())
+
+    def update_dialog(self, info=None, problem=""):
+        patcher = patch.object(updater, "self_update_problem", return_value=problem)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return update_ui.UpdateDialog(None, False, "fr", main_window.open_settings(), info)
+
+    def test_dialog_offers_the_install_when_a_newer_version_is_ready(self):
+        dialog = self.update_dialog(self.info())
+        self.assertIn("1.0.2", dialog.status_label.text())
+        self.assertEqual(dialog.action_mode(), "install")
+        self.assertEqual(dialog.action_button.text(), i18n.STRINGS["fr"]["update_btn_install"])
+        self.assertFalse(dialog.action_button.isHidden())
+        self.assertFalse(dialog.notes.isHidden())
+        self.assertIn("Nouveau", dialog.notes.toPlainText())
+        dialog.close()
+
+    def test_dialog_hides_the_action_when_up_to_date(self):
+        dialog = self.update_dialog(self.info(newer=False))
+        self.assertEqual(dialog.status_label.text(), i18n.STRINGS["fr"]["update_uptodate"])
+        self.assertTrue(dialog.action_button.isHidden())
+        dialog.close()
+
+    def test_dialog_sends_to_the_download_page_when_it_cannot_install(self):
+        for info, problem, expected in ((self.info(url=""), "", "update_no_exe"),
+                                        (self.info(), "update_from_source", "update_from_source"),
+                                        (self.info(), "update_not_writable", "update_not_writable")):
+            with self.subTest(expected):
+                dialog = self.update_dialog(info, problem)
+                self.assertEqual(dialog.action_mode(), "page")
+                self.assertIn(i18n.STRINGS["fr"][expected], dialog.status_label.text())
+                with patch.object(update_ui.QDesktopServices, "openUrl") as open_url:
+                    dialog.run_action()
+                self.assertEqual(open_url.call_args.args[0].toString(), updater.RELEASES_URL)
+                dialog.close()
+
+    def test_dialog_checks_on_opening_and_reports_errors_in_its_language(self):
+        with patch.object(updater, "check_latest", return_value=self.info()):
+            dialog = self.update_dialog(None)
+            self.assertTrue(self.wait_until(lambda: dialog.info is not None))
+        self.assertEqual(dialog.action_mode(), "install")
+        dialog.close()
+        with patch.object(updater, "check_latest", side_effect=updater.UpdateError("update_err_rate")):
+            dialog = self.update_dialog(None)
+            self.assertTrue(self.wait_until(lambda: i18n.STRINGS["fr"]["update_err_rate"] in dialog.status_label.text()))
+        self.assertTrue(dialog.check_button.isEnabled())  # on peut réessayer / can retry
+        dialog.close()
+
+    def test_dialog_downloads_then_hands_over_the_staged_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            exe = Path(temporary) / "FastSweep.exe"
+            staged = updater.staged_path(exe)
+            def fake_download(info, target, progress, stop):
+                progress(50, 100)
+                return target
+            with patch.object(updater, "current_executable", return_value=exe), \
+                    patch.object(updater, "download", side_effect=fake_download) as download:
+                dialog = self.update_dialog(self.info())
+                dialog.run_action()
+                self.assertTrue(self.wait_until(lambda: dialog.staged is not None))
+            self.assertEqual(dialog.staged, staged)
+            self.assertEqual(download.call_args.args[1], staged)
+            self.assertEqual(dialog.result(), main_window.QDialog.DialogCode.Accepted)
+            dialog.close()
+
+    def test_dialog_cancel_stops_the_download_and_closing_ignores_late_results(self):
+        started = threading.Event()
+        def slow(info, target, progress, stop):
+            started.set()
+            stop.wait(5)
+            raise updater.UpdateError("update_err_cancelled")
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(updater, "current_executable", return_value=Path(temporary) / "FastSweep.exe"), \
+                patch.object(updater, "download", side_effect=slow):
+            dialog = self.update_dialog(self.info())
+            dialog.run_action()
+            self.assertTrue(started.wait(5))
+            self.assertEqual(dialog.action_mode(), "cancel")
+            dialog.run_action()
+            self.assertTrue(self.wait_until(lambda: i18n.STRINGS["fr"]["update_err_cancelled"] in dialog.status_label.text()))
+            self.assertEqual(dialog.action_mode(), "install")  # on peut relancer / can start again
+            self.assertIsNone(dialog.staged)
+            dialog.close()
+
+    def test_dialog_options_are_remembered_and_auto_install_follows_the_check(self):
+        dialog = self.update_dialog(self.info(newer=False))
+        self.assertTrue(dialog.auto_check.isChecked())
+        self.assertFalse(dialog.auto_install.isChecked())  # jamais sans accord / never without consent
+        dialog.auto_install.setChecked(True)
+        dialog.auto_check.setChecked(False)
+        self.assertFalse(dialog.auto_install.isEnabled())
+        settings = main_window.open_settings()
+        self.assertEqual((settings.value("update_auto_check", True, type=bool), settings.value("update_auto_install", False, type=bool)),
+                         (False, True))
+        dialog.close()
+
+    def test_window_only_looks_for_updates_at_startup_when_asked(self):
+        with patch.object(main_window.QTimer, "singleShot") as timer:
+            plain = self.checkbox_window()
+            plain.show()
+            timer.assert_not_called()  # tests et usages sans réseau / tests and offline uses
+            plain.close()
+            with patch.object(main_window, "read_classic_apps", return_value=[]), \
+                    patch.object(main_window, "read_store_apps", return_value=([], "")):
+                real = main_window.MainWindow(check_updates=True)
+                self.wait_for_workers(real)
+                real.show()
+            self.assertEqual(timer.call_args.args, (main_window.STARTUP_UPDATE_DELAY_MS, real.startup_update_check))
+            real.close()
+
+    def startup_window(self, info):
+        window = self.checkbox_window()
+        patcher = patch.object(updater, "check_latest", return_value=info)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return window
+
+    def test_startup_check_is_silent_and_marks_the_sidebar_button(self):
+        window = self.startup_window(self.info())
+        self.assertEqual(window.update_btn.text(), window.t("update_nav"))
+        with patch.object(window, "show_updates") as show:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: window.update_info is not None))
+        self.assertEqual(window.update_btn.text(), window.t("update_nav_new"))
+        self.assertTrue(window.update_btn.property("highlight"))
+        show.assert_called_once()  # proposée à l'ouverture / offered on startup
+        window.close()
+
+    def test_startup_prompt_appears_once_per_version(self):
+        window = self.startup_window(self.info())
+        with patch.object(window, "show_updates") as show:
+            for _ in range(2):
+                window.startup_update_check()
+                self.assertTrue(self.wait_until(lambda: window._update_task is None))
+            self.assertEqual(show.call_count, 1)
+            window.settings.setValue("update_dismissed", "")
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: show.call_count == 2))
+        window.close()
+
+    def test_startup_check_respects_the_opt_out_and_stays_quiet_when_offline(self):
+        window = self.startup_window(self.info())
+        window.settings.setValue("update_auto_check", False)
+        with patch.object(window, "show_updates") as show:
+            window.startup_update_check()
+            self.assertIsNone(window._update_task)
+        window.settings.setValue("update_auto_check", True)
+        with patch.object(updater, "check_latest", side_effect=updater.UpdateError("update_err_network", "offline")), \
+                patch.object(main_window.QMessageBox, "critical") as critical, \
+                patch.object(main_window.QMessageBox, "warning") as warning:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: window._update_task is None))
+        show.assert_not_called()
+        critical.assert_not_called()
+        warning.assert_not_called()
+        self.assertIsNone(window.update_info)
+        window.close()
+
+    def test_automatic_install_downloads_then_applies_without_asking(self):
+        window = self.startup_window(self.info())
+        window.settings.setValue("update_auto_install", True)
+        with tempfile.TemporaryDirectory() as temporary:
+            exe = Path(temporary) / "FastSweep.exe"
+            with patch.object(updater, "self_update_problem", return_value=""), \
+                    patch.object(updater, "current_executable", return_value=exe), \
+                    patch.object(updater, "download", side_effect=lambda info, target, progress, stop: target), \
+                    patch.object(window, "apply_update") as apply, \
+                    patch.object(window, "show_updates") as show:
+                window.startup_update_check()
+                self.assertTrue(self.wait_until(lambda: apply.called))
+            apply.assert_called_once_with(updater.staged_path(exe))
+            show.assert_not_called()
+        window.close()
+
+    def test_automatic_install_falls_back_to_the_prompt_when_it_cannot_install(self):
+        window = self.startup_window(self.info())
+        window.settings.setValue("update_auto_install", True)
+        with patch.object(updater, "self_update_problem", return_value="update_from_source"), \
+                patch.object(window, "apply_update") as apply, patch.object(window, "show_updates") as show:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: show.called))
+        apply.assert_not_called()
+        window.close()
+
+    def test_apply_update_replaces_the_exe_records_history_and_restarts(self):
+        window = self.checkbox_window()
+        window.update_info = self.info()
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            with patch.object(updater, "current_executable", return_value=exe), \
+                    patch.object(updater, "restart") as restart, \
+                    patch.object(window, "record_history") as record, \
+                    patch.object(window, "close") as close:
+                window.apply_update(staged)
+            self.assertEqual(exe.read_bytes(), b"MZ-new")
+        restart.assert_called_once_with(exe)
+        close.assert_called_once()
+        self.assertEqual(record.call_args.args[:3], ("FastSweep", "update", "success"))
+        self.assertEqual(record.call_args.args[3]["to"], "1.0.2")
+        window.close()
+
+    def test_apply_update_waits_for_a_running_operation_and_survives_failures(self):
+        window = self.checkbox_window()
+        window.update_info = self.info()
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            with patch.object(updater, "current_executable", return_value=exe), \
+                    patch.object(updater, "restart") as restart, \
+                    patch.object(main_window.QMessageBox, "information") as info, \
+                    patch.object(main_window.QMessageBox, "critical") as critical, \
+                    patch.object(main_window.QMessageBox, "warning") as warning, \
+                    patch.object(window, "record_history") as record, \
+                    patch.object(window, "close") as close:
+                window._busy = True
+                window.apply_update(staged)
+                info.assert_called_once()
+                self.assertEqual(exe.read_bytes(), b"MZ-old")  # rien touché pendant une opération / nothing touched during an operation
+                window._busy = False
+                with patch.object(updater.os, "replace", side_effect=PermissionError("verrouillé")):
+                    window.apply_update(staged)
+                critical.assert_called_once()
+                self.assertEqual(exe.read_bytes(), b"MZ-old")  # ancienne version conservée / old version kept
+                self.assertEqual(record.call_args.args[2], "failed")
+                restart.assert_not_called()
+                close.assert_not_called()
+                restart.side_effect = OSError("introuvable")
+                window.apply_update(staged)  # l'installation réussit, le relancement échoue / install works, restart fails
+                warning.assert_called_once()
+                close.assert_not_called()  # l'utilisateur garde sa fenêtre et un message / user keeps the window and a message
+        window.close()
+
+    def test_update_history_entries_are_named_in_both_languages(self):
+        for lang in ("fr", "en"):
+            self.assertIn("history_update", i18n.STRINGS[lang])
+        self.assertEqual(dialogs.HistoryDialog.OPERATION_KEYS["update"], "history_update")
 
 
 class FakeRegistry:
