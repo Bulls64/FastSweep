@@ -357,10 +357,18 @@ def wait_for_process_tree(process, interval: float = 0.35) -> int:
     except psutil.Error:
         return process.wait()
 
+    died: dict[int, float] = {}  # pid -> heure où on l'a vu terminé / pid -> time we saw it finished
+
     def discover() -> None:
         """Ajoute les descendants des processus suivis, jusqu'à ne plus en trouver de nouveaux.
 
         Adds the descendants of the tracked processes, until no new one turns up.
+        Windows réutilise vite les numéros de processus : un processus quelconque qui prend le numéro d'un suivi
+        déjà terminé a des enfants qui ne sont pas les nôtres. Un enfant d'un parent terminé n'est donc retenu que
+        s'il a démarré avant qu'on constate la fin de ce parent.
+        Windows reuses process ids quickly: an unrelated process that takes the id of an already finished tracked
+        one has children that are not ours. A child of a finished parent is therefore only kept if it started
+        before we saw that parent finish.
         """
         try:
             parents = _parent_map()
@@ -377,12 +385,20 @@ def wait_for_process_tree(process, interval: float = 0.35) -> int:
                     child_started = _create_time(pid)
                 except psutil.Error:
                     continue
+                if ppid in died and child_started > died[ppid]:
+                    continue  # né après la fin du parent : numéro réutilisé / born after the parent ended: reused id
                 if child_started >= parent_started:  # pas un ancien processus ayant réutilisé le pid du parent / not an older process that reused the parent's pid
                     tracked[pid] = child_started
                     added = True
 
     def running() -> bool:
-        return any(_still_running(pid, started) for pid, started in tracked.items())
+        alive = False
+        for pid, started in tracked.items():
+            if _still_running(pid, started):
+                alive = True
+            else:
+                died.setdefault(pid, time.time())
+        return alive
 
     while True:
         discover()

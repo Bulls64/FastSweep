@@ -1,7 +1,9 @@
 # Construit FastSweep.exe et le joint à la release quand une release est publiée sur GitHub.
-# Lancé à la main (onglet Actions), il construit seulement l'exe, téléchargeable dans les artefacts du run.
+# Lancé à la main (onglet Actions), il construit l'exe depuis la branche choisie ; si on indique un tag, il
+# le joint aussi à cette release (utile quand le workflow automatique a échoué).
 # Builds FastSweep.exe and attaches it to the release when a GitHub release is published.
-# Run by hand (Actions tab), it only builds the exe, downloadable from the run's artifacts.
+# Run by hand (Actions tab), it builds the exe from the chosen branch; if a tag is given, it also attaches
+# it to that release (useful when the automatic workflow failed).
 
 name: Release
 
@@ -9,6 +11,11 @@ on:
   release:
     types: [ published ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release à laquelle joindre l'exe, ex. v1.0.1 (vide : construire seulement) / Release tag to attach the exe to, e.g. v1.0.1 (empty: build only)"
+        required: false
+        default: ""
 
 permissions:
   contents: write  # joindre l'exe à la release / attach the exe to the release
@@ -16,6 +23,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30  # un blocage s'arrête seul / a hang stops by itself
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,11 +37,11 @@ jobs:
           cache: pip
 
       - name: Check that the tag matches __version__
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         shell: pwsh
         run: |
           $version = python -c "import fastsweep; print(fastsweep.__version__)"
-          $tag = "${{ github.event.release.tag_name }}"
+          $tag = $env:RELEASE_TAG
           if ($tag -ne "v$version" -and $tag -ne $version) {
             Write-Error "Le tag $tag ne correspond pas à __version__ ($version) / tag does not match __version__"
             exit 1
@@ -45,7 +55,7 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests
+        run: python -m unittest discover -s tests -v
 
       - name: Build FastSweep.exe
         run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath work FastSweep.spec
@@ -57,7 +67,7 @@ jobs:
           path: dist/FastSweep.exe
 
       - name: Attach FastSweep.exe to the release
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/FastSweep.exe --clobber
+        run: gh release upload "$env:RELEASE_TAG" dist/FastSweep.exe --clobber

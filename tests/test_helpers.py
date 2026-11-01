@@ -1,4 +1,5 @@
 import base64
+import faulthandler
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -32,6 +33,11 @@ class HelperTests(unittest.TestCase):
         # On Windows, native settings live in the registry (setPath has no effect there): without this, the tests
         # would read and wipe the user's real settings. So force a throwaway INI file, and a throwaway
         # %LOCALAPPDATA% for the history and backups.
+        # Garde-fou : un test qui se bloque affiche la pile de tous les threads puis arrête le processus, au lieu
+        # de laisser un build (ou la CI) tourner indéfiniment sans rien dire.
+        # Safety net: a test that hangs prints every thread's stack then stops the process, instead of
+        # letting a build (or the CI) run forever without a word.
+        faulthandler.dump_traceback_later(300, exit=True)
         from PySide6.QtCore import QSettings
         cls.settings_dir = tempfile.TemporaryDirectory()
         cls.data_dir = tempfile.TemporaryDirectory()
@@ -45,6 +51,7 @@ class HelperTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        faulthandler.cancel_dump_traceback_later()
         for item in reversed(cls.class_patches):
             item.stop()
         cls.settings_dir.cleanup()
@@ -102,6 +109,22 @@ class HelperTests(unittest.TestCase):
                 patch.object(uninstall.time, "sleep"):
             self.assertEqual(uninstall.wait_for_process_tree(process, interval=0), 0)
         self.assertGreaterEqual(len(child_checks), 3)  # attendu jusqu'à la fin de l'enfant / waited until the child ended
+
+    def test_process_watcher_ignores_children_of_a_reused_process_id(self):
+        # Le parent 100 se termine ; un processus étranger prend ensuite le numéro 100 et lance 300.
+        # Parent 100 ends; an unrelated process then takes id 100 and starts 300.
+        scans = iter([{100: 1}, {100: 1, 300: 100}])
+        sleeps = []
+        def sleep(_seconds):
+            sleeps.append(1)
+            if len(sleeps) > 5:
+                raise AssertionError("le suivi attend un processus qui n'est pas le sien / waits for a process that is not its own")
+        process = type("Process", (), {"pid": 100, "wait": lambda self: 0})()
+        with patch.object(uninstall, "_parent_map", side_effect=lambda: next(scans, {100: 1, 300: 100})), \
+                patch.object(uninstall, "_create_time", side_effect=lambda pid: {100: 10.0, 300: time.time() + 1000}[pid]), \
+                patch.object(uninstall, "_still_running", side_effect=lambda pid, started: pid == 300), \
+                patch.object(uninstall.time, "sleep", sleep):
+            self.assertEqual(uninstall.wait_for_process_tree(process, interval=0), 0)
 
     def test_parent_map_falls_back_to_the_public_api(self):
         fake = [type("P", (), {"info": {"pid": 7, "ppid": 3}})()]
