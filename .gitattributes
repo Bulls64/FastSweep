@@ -1,2 +1,14 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Scripts Windows : toujours en CRLF (cmd.exe casse les étiquettes et les goto d'un .bat en LF),
+# y compris dans le « Download ZIP » de GitHub.
+# Windows scripts: always CRLF (cmd.exe breaks labels and goto in an LF .bat file),
+# including in GitHub's "Download ZIP".
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaires / Binaries
+*.png binary
+*.ico binary

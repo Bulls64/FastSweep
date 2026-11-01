@@ -128,7 +128,7 @@ py -m unittest discover -s tests -v
 
 ### License
 
-No license has been chosen yet.
+FastSweep is released under the [MIT License](LICENSE).
 
 ---
 
@@ -242,7 +242,7 @@ py -m unittest discover -s tests -v
 
 ### Licence
 
-Aucune licence n'a encore été choisie.
+FastSweep est distribué sous [licence MIT](LICENSE).
 
 ---
 
