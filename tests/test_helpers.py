@@ -85,6 +85,31 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertGreaterEqual(time.monotonic() - started, 0.5)
 
+    def test_process_watcher_catches_a_child_started_just_before_the_parent_ends(self):
+        # Parent 100 : le 1er parcours ne voit pas encore l'enfant 200, puis le parent se termine.
+        # Parent 100: the 1st scan does not see child 200 yet, then the parent ends.
+        scans = iter([{100: 1}, {100: 1, 200: 100}])
+        child_checks = []
+        def still_running(pid, started):
+            if pid == 200:
+                child_checks.append(started)
+                return len(child_checks) < 3  # l'enfant tourne encore un peu / the child runs a little longer
+            return False
+        process = type("Process", (), {"pid": 100, "wait": lambda self: 0})()
+        with patch.object(uninstall, "_parent_map", side_effect=lambda: next(scans, {100: 1, 200: 100})), \
+                patch.object(uninstall, "_create_time", side_effect=lambda pid: {100: 10.0, 200: 10.1}[pid]), \
+                patch.object(uninstall, "_still_running", side_effect=still_running), \
+                patch.object(uninstall.time, "sleep"):
+            self.assertEqual(uninstall.wait_for_process_tree(process, interval=0), 0)
+        self.assertGreaterEqual(len(child_checks), 3)  # attendu jusqu'à la fin de l'enfant / waited until the child ended
+
+    def test_parent_map_falls_back_to_the_public_api(self):
+        fake = [type("P", (), {"info": {"pid": 7, "ppid": 3}})()]
+        with patch.object(uninstall.psutil, "_psplatform", None), \
+                patch.object(uninstall.psutil, "process_iter", return_value=fake):
+            self.assertEqual(uninstall._parent_map(), {7: 3})
+        self.assertIn(os.getpid(), uninstall._parent_map())  # vrai instantané / real snapshot
+
     def test_file_scan_finds_exact_and_publisher_nested_residue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

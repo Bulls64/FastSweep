@@ -321,6 +321,28 @@ def uninstall_status(exit_code: int) -> str:
     return "success" if exit_code in SUCCESS_EXIT_CODES else "partial"
 
 
+def _parent_map() -> dict[int, int]:
+    """pid → pid du parent pour tous les processus, en un seul instantané quand psutil le permet.
+
+    pid → parent pid for every process, in a single snapshot when psutil allows it.
+    Sous Windows, psutil.Process.ppid() relit toute la liste des processus à chaque appel : l'appeler pour chaque
+    processus rend un parcours si lent (≈ 0,3 s) qu'un enfant lancé pendant ce temps pouvait passer inaperçu.
+    On Windows, psutil.Process.ppid() reads the whole process list on every call: calling it for each process
+    makes a scan so slow (≈ 0.3 s) that a child started meanwhile could go unnoticed.
+    """
+    snapshot = getattr(getattr(psutil, "_psplatform", None), "ppid_map", None)
+    if callable(snapshot):
+        try:
+            return dict(snapshot())
+        except Exception:
+            pass  # repli public ci-dessous / public fallback below
+    return {proc.info["pid"]: proc.info["ppid"] for proc in psutil.process_iter(("pid", "ppid"))}
+
+
+def _create_time(pid: int) -> float:
+    return psutil.Process(pid).create_time()
+
+
 def wait_for_process_tree(process, interval: float = 0.35) -> int:
     """Attend le désinstalleur et les processus qu'il a lancés (beaucoup de désinstalleurs se relancent eux-mêmes).
 
@@ -331,27 +353,47 @@ def wait_for_process_tree(process, interval: float = 0.35) -> int:
         # PID 0 is the System Idle Process: never track it (it would never "finish").
         return process.wait()
     try:
-        tracked = {process.pid: psutil.Process(process.pid).create_time()}  # pid -> heure de démarrage / pid -> start time
+        tracked = {process.pid: _create_time(process.pid)}  # pid -> heure de démarrage / pid -> start time
     except psutil.Error:
         return process.wait()
-    while True:
+
+    def discover() -> None:
+        """Ajoute les descendants des processus suivis, jusqu'à ne plus en trouver de nouveaux.
+
+        Adds the descendants of the tracked processes, until no new one turns up.
+        """
         try:
-            # Les identifiants de parent viennent d'un seul instantané du système ; l'heure de démarrage n'est lue que pour les vrais enfants.
-            # Parent ids come from one system snapshot; start times are only read for real children.
-            for child in psutil.process_iter(("pid", "ppid")):
-                parent_started = tracked.get(child.info["ppid"])
-                if parent_started is None or child.info["pid"] in tracked:
+            parents = _parent_map()
+        except (psutil.Error, OSError):
+            return
+        added = True
+        while added:  # petits-enfants compris / grandchildren included
+            added = False
+            for pid, ppid in parents.items():
+                parent_started = tracked.get(ppid)
+                if parent_started is None or pid in tracked:
                     continue
                 try:
-                    child_started = child.create_time()
+                    child_started = _create_time(pid)
                 except psutil.Error:
                     continue
                 if child_started >= parent_started:  # pas un ancien processus ayant réutilisé le pid du parent / not an older process that reused the parent's pid
-                    tracked[child.info["pid"]] = child_started
-        except (psutil.Error, OSError):
-            pass
-        if not any(_still_running(pid, started) for pid, started in tracked.items()):
-            return process.wait()
+                    tracked[pid] = child_started
+                    added = True
+
+    def running() -> bool:
+        return any(_still_running(pid, started) for pid, started in tracked.items())
+
+    while True:
+        discover()
+        # Tout semble fini : un enfant lancé juste avant la fin de son parent a pu échapper au parcours précédent.
+        # Un dernier parcours, fait après avoir vu le parent terminé, le trouve forcément s'il tourne encore.
+        # Everything looks finished: a child started just before its parent ended may have escaped the previous scan.
+        # One last scan, made after seeing the parent finished, is bound to find it if it is still running.
+        if not running():
+            discover()
+            if not running():
+                return process.wait()
         time.sleep(interval)
 
 
