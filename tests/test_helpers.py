@@ -783,6 +783,17 @@ class HelperTests(unittest.TestCase):
     # --- Scripts de build : format attendu par Windows -------------------------------------------------
     # --- Build scripts: format expected by Windows ------------------------------------------------------
 
+    def test_version_is_the_same_everywhere(self):
+        from fastsweep import __version__
+        project = Path(__file__).resolve().parents[1]
+        info = (project / "version_info.txt").read_text(encoding="utf-8")
+        numbers = ", ".join(__version__.split(".")) + ", 0"
+        self.assertIn(f"filevers=({numbers})", info)
+        self.assertIn(f"prodvers=({numbers})", info)
+        self.assertIn(f"StringStruct('FileVersion', '{__version__}')", info)
+        self.assertIn(f"StringStruct('ProductVersion', '{__version__}')", info)
+        self.assertIn(f"version-{__version__}-", (project / "README.md").read_text(encoding="utf-8"))
+
     def test_build_scripts_use_windows_line_endings(self):
         # cmd.exe lit mal un .bat en fins de ligne LF (étiquettes et blocs ignorés) : le script s'arrête sans rien faire.
         # cmd.exe misreads a .bat with LF line endings (labels and blocks skipped): the script stops doing nothing.
