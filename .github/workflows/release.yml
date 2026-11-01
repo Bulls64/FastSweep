@@ -1,0 +1,63 @@
+# Construit FastSweep.exe et le joint à la release quand une release est publiée sur GitHub.
+# Lancé à la main (onglet Actions), il construit seulement l'exe, téléchargeable dans les artefacts du run.
+# Builds FastSweep.exe and attaches it to the release when a GitHub release is published.
+# Run by hand (Actions tab), it only builds the exe, downloadable from the run's artifacts.
+
+name: Release
+
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # joindre l'exe à la release / attach the exe to the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Check that the tag matches __version__
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $version = python -c "import fastsweep; print(fastsweep.__version__)"
+          $tag = "${{ github.event.release.tag_name }}"
+          if ($tag -ne "v$version" -and $tag -ne $version) {
+            Write-Error "Le tag $tag ne correspond pas à __version__ ($version) / tag does not match __version__"
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests
+
+      - name: Build FastSweep.exe
+        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath work FastSweep.spec
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FastSweep
+          path: dist/FastSweep.exe
+
+      - name: Attach FastSweep.exe to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/FastSweep.exe --clobber

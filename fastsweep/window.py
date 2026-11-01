@@ -75,6 +75,14 @@ SETTINGS_ORG, SETTINGS_APP = "FastSweep", "FastSweep"
 LEGACY_SETTINGS = ("Clair", "ClairUninstaller")  # ancien nom / former name
 
 
+def open_settings() -> QSettings:
+    """Réglages de FastSweep (registre HKCU sous Windows) ; les tests la remplacent par un fichier jetable.
+
+    FastSweep's settings (HKCU registry on Windows); the tests replace it with a throwaway file.
+    """
+    return QSettings(SETTINGS_ORG, SETTINGS_APP)
+
+
 def migrate_legacy_settings(settings: QSettings) -> None:
     """Reprend la langue et le thème enregistrés sous l'ancien nom, tant que rien n'est enregistré sous le nouveau.
 
@@ -112,7 +120,7 @@ class LeftoverScan:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.settings = open_settings()
         migrate_legacy_settings(self.settings)
         self.lang = self.settings.value("language", "fr")
         if self.lang not in STRINGS:

@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Bulls64/FastSweep/actions/workflows/python-app.yml"><img alt="Tests" src="https://github.com/Bulls64/FastSweep/actions/workflows/python-app.yml/badge.svg"></a>
   <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0067C0">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB">
   <img alt="PySide6" src="https://img.shields.io/badge/Qt-PySide6-41CD52">
@@ -74,6 +75,10 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 - Python 3.10 or later (to run from source)
 - Administrator rights for restore points and machine-wide registry keys. The **Relaunch as administrator** button shows the UAC prompt.
 - System Protection turned on, for restore points
+
+### Download
+
+`FastSweep.exe` is attached to each [release](https://github.com/Bulls64/FastSweep/releases): download it and run it, no installation needed.
 
 ### Running from source
 
@@ -188,6 +193,10 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 - Python 3.10 ou plus récent (pour lancer depuis les sources)
 - Droits administrateur pour les points de restauration et les clés de registre de l'ordinateur. Le bouton **Relancer en administrateur** affiche l'invite UAC.
 - Protection du système activée, pour les points de restauration
+
+### Téléchargement
+
+`FastSweep.exe` est joint à chaque [release](https://github.com/Bulls64/FastSweep/releases) : téléchargez-le et lancez-le, sans installation.
 
 ### Lancer depuis les sources
 

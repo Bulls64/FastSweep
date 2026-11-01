@@ -26,14 +26,32 @@ class HelperTests(unittest.TestCase):
         cls.qt_app = QApplication.instance() or QApplication([])
         # Réglages dans un dossier jetable : un test ne doit ni lire ni modifier ceux de l'utilisateur.
         # Settings in a throwaway folder: a test must neither read nor change the user's own.
+        # Sous Windows, les réglages natifs sont dans le registre (setPath n'y change rien) : sans cela, les tests
+        # liraient et effaceraient les vrais réglages de l'utilisateur. On impose donc un fichier INI jetable,
+        # et un %LOCALAPPDATA% jetable pour l'historique et les sauvegardes.
+        # On Windows, native settings live in the registry (setPath has no effect there): without this, the tests
+        # would read and wipe the user's real settings. So force a throwaway INI file, and a throwaway
+        # %LOCALAPPDATA% for the history and backups.
         from PySide6.QtCore import QSettings
         cls.settings_dir = tempfile.TemporaryDirectory()
-        for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
-            QSettings.setPath(fmt, QSettings.Scope.UserScope, cls.settings_dir.name)
+        cls.data_dir = tempfile.TemporaryDirectory()
+        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, cls.settings_dir.name)
+        ini = lambda: QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope,
+                                main_window.SETTINGS_ORG, main_window.SETTINGS_APP)
+        cls.class_patches = [patch.object(main_window, "open_settings", ini),
+                             patch.dict(os.environ, {"LOCALAPPDATA": cls.data_dir.name})]
+        for item in cls.class_patches:
+            item.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for item in reversed(cls.class_patches):
+            item.stop()
+        cls.settings_dir.cleanup()
+        cls.data_dir.cleanup()
 
     def setUp(self):
-        from PySide6.QtCore import QSettings
-        settings = QSettings(main_window.SETTINGS_ORG, main_window.SETTINGS_APP)
+        settings = main_window.open_settings()
         settings.clear()  # chaque test part des réglages par défaut / each test starts from default settings
         settings.sync()
 
@@ -1122,6 +1140,13 @@ class HelperTests(unittest.TestCase):
         dialog.update_item(0, {"result": {"exit_code": 0, "silent": True}})
         self.assertIn(i18n.STRINGS["fr"]["queue_silent"], dialog.items.item(0).text())
         dialog.close()
+
+    def test_tests_never_touch_the_real_settings(self):
+        from PySide6.QtCore import QSettings
+        settings = main_window.open_settings()
+        self.assertEqual(settings.format(), QSettings.Format.IniFormat)
+        self.assertTrue(Path(settings.fileName()).is_relative_to(Path(self.settings_dir.name)))
+        self.assertTrue(system.app_data_dir().is_relative_to(Path(self.data_dir.name)))
 
     def test_uninstall_options_are_remembered(self):
         window = self.checkbox_window()
