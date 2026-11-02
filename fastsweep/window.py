@@ -50,7 +50,17 @@ from .restore_page import RestorePointsPage
 from .system import is_admin, is_windows, relaunch_as_admin
 from .settings_page import SETTING_OPACITY, SettingsPage
 from .theme import DEFAULT_OPACITY, background_opacity, colors, set_background_opacity, theme_stylesheet
-from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_DISMISSED, UpdateDialog, UpdateTask, describe_error
+from .update_ui import (
+    SETTING_AUTO_CHECK,
+    SETTING_AUTO_INSTALL,
+    SETTING_DISMISSED,
+    SETTING_WHATS_NEW,
+    SETTING_WHATS_NEW_SEEN,
+    UpdateDialog,
+    UpdateTask,
+    WhatsNewDialog,
+    describe_error,
+)
 from .uninstall import (
     REBOOT_EXIT_CODES,
     RESTORE_POINT_ERROR_PREFIX,
@@ -645,7 +655,23 @@ class MainWindow(QMainWindow):
         self.stop_size_workers()
         for worker in list(self._size_workers):
             worker.wait()
+        self.drop_update_task()  # une réponse réseau tardive n'ouvre rien après la fermeture / a late reply opens nothing after closing
         event.accept()
+
+    def drop_update_task(self) -> None:
+        """Ignore le résultat de la requête GitHub en cours (le thread réseau, démon, finit seul).
+
+        Ignores the result of the running GitHub request (the daemon network thread ends by itself).
+        """
+        task, self._update_task = self._update_task, None
+        if task is None:
+            return
+        task.stop.set()
+        for signal in (task.done, task.failed, task.progress):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
 
     def load_apps(self, on_complete=None) -> None:
         if not is_windows():
@@ -1128,12 +1154,23 @@ class MainWindow(QMainWindow):
         self.update_info = info if info is not None and info.newer else None
         self.refresh_update_button()
 
+    def whats_new_pending(self) -> bool:
+        """Premier démarrage de cette version, et l'option « Afficher les nouveautés » active.
+
+        First start of this version, and the "Show what's new" option on.
+        """
+        return (self.settings.value(SETTING_WHATS_NEW, True, type=bool)
+                and self.settings.value(SETTING_WHATS_NEW_SEEN, "") != __version__)
+
     def startup_update_check(self) -> None:
         """Recherche silencieuse au démarrage : une erreur réseau (hors ligne…) ne dérange jamais l'utilisateur.
 
         Silent startup lookup: a network error (offline…) never bothers the user.
+        Une seule requête sert à la recherche de mise à jour et aux nouveautés : jamais deux fenêtres à la fois.
+        A single request serves both the update check and what's new: never two windows at once.
         """
-        if not self.settings.value(SETTING_AUTO_CHECK, True, type=bool) or self._update_task is not None:
+        wanted = self.settings.value(SETTING_AUTO_CHECK, True, type=bool) or self.whats_new_pending()
+        if not wanted or self._update_task is not None:
             return
         task = self._update_task = UpdateTask(self)
         task.done.connect(self.startup_update_found)
@@ -1147,7 +1184,15 @@ class MainWindow(QMainWindow):
         self._update_task = None
         self.set_update_info(info)
         if not info.newer:
+            # À jour : au premier démarrage de cette version, ses nouveautés (une seule fois).
+            # Up to date: on the first start of this version, what's new in it (once).
+            same_version = not updater.is_newer(__version__, info.version)
+            if self.whats_new_pending() and same_version:
+                self.settings.setValue(SETTING_WHATS_NEW_SEEN, __version__)
+                self.show_whats_new(info)
             return
+        if not self.settings.value(SETTING_AUTO_CHECK, True, type=bool):
+            return  # nouveautés seules demandées : pas de proposition de mise à jour / only what's new wanted: no update offer
         if (self.settings.value(SETTING_AUTO_INSTALL, False, type=bool) and info.installable
                 and not updater.self_update_problem() and not self._busy):
             self.start_auto_install(info)
@@ -1173,6 +1218,19 @@ class MainWindow(QMainWindow):
     def auto_update_failed(self, key: str, detail: str) -> None:
         self._update_task = None
         self.status_label.setText(describe_error(STRINGS[self.lang], key, detail)[:180])
+
+    def show_whats_new(self, info: updater.UpdateInfo | None = None) -> None:
+        """Fenêtre « Nouveautés » ; ``info`` connu au démarrage, sinon cherché à l'ouverture.
+
+        "What's new" window; ``info`` known at startup, otherwise looked up on opening.
+        """
+        dialog = WhatsNewDialog(self, self.dark, self.lang, self.settings, info)
+        dialog.exec()
+        self.settings_page.load()  # option « Afficher les nouveautés » peut-être changée / option maybe changed
+        if dialog.info is not None:
+            self.set_update_info(dialog.info)
+        if dialog.wants_update:
+            self.show_updates()
 
     def show_updates(self) -> None:
         dialog = UpdateDialog(self, self.dark, self.lang, self.settings, self.update_info)

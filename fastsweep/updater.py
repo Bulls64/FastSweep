@@ -18,6 +18,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -59,10 +60,22 @@ class UpdateInfo:
     sha256: str  # "" si GitHub n'en donne pas / "" when GitHub gives none
     page: str
     newer: bool  # plus récente que la version installée / newer than the installed version
+    published: str = ""  # date de publication ISO 8601 donnée par GitHub / ISO 8601 publication date from GitHub
 
     @property
     def installable(self) -> bool:
         return bool(self.url)
+
+    @property
+    def published_date(self) -> str:
+        """Date de publication au format JJ/MM/AAAA (heure locale), "" si inconnue.
+
+        Publication date as DD/MM/YYYY (local time), "" if unknown.
+        """
+        try:
+            return datetime.fromisoformat(self.published.replace("Z", "+00:00")).astimezone().strftime("%d/%m/%Y")
+        except ValueError:
+            return ""
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -180,7 +193,7 @@ def check_latest(current: str = __version__) -> UpdateInfo:
     version = ".".join(str(part) for part in numbers)
     return UpdateInfo(version, tag, str(data.get("body") or "").strip(), url, size, sha256,
                       page if page.startswith(f"https://github.com/{REPO}/") else RELEASES_URL,
-                      is_newer(version, current))
+                      is_newer(version, current), str(data.get("published_at") or ""))
 
 
 def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> Path:

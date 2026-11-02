@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .about import AboutSection
 from .theme import DEFAULT_OPACITY
-from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL
+from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_WHATS_NEW
 
 SETTING_OPACITY = "background_opacity"
 OPACITY_DELAY_MS = 120  # regroupe les mouvements du curseur avant de redessiner / groups slider moves before repainting
@@ -110,12 +110,13 @@ class SettingsPage(QWidget):
         self.check_now = QPushButton()
         self.check_now.clicked.connect(self.host.show_updates)  # recherche, nouveautés, téléchargement / lookup, notes, download
         self.updates_row = self.row(updates, self.check_now)
-        for check in (self.auto_check, self.auto_install):
-            line = QHBoxLayout()
-            line.setContentsMargins(16, 4, 16, 4)
-            line.addWidget(check)
-            updates.addLayout(line)
-        updates.addSpacing(8)
+        self.add_checks(updates, self.auto_check, self.auto_install)
+        self.whats_new_btn = QPushButton()
+        self.whats_new_btn.clicked.connect(lambda: self.host.show_whats_new())
+        self.whats_new_row = self.row(updates, self.whats_new_btn)
+        self.whats_new_auto = QCheckBox()
+        self.whats_new_auto.toggled.connect(lambda checked: self.host.settings.setValue(SETTING_WHATS_NEW, checked))
+        self.add_checks(updates, self.whats_new_auto)
 
         self.about_label = self.section(layout)
         about = self.card(layout)
@@ -125,6 +126,15 @@ class SettingsPage(QWidget):
         self.update_copy()
 
     # --- Construction / Building -------------------------------------------------------------------
+
+    @staticmethod
+    def add_checks(card: QVBoxLayout, *checks: QCheckBox) -> None:
+        for check in checks:
+            line = QHBoxLayout()
+            line.setContentsMargins(16, 4, 16, 4)
+            line.addWidget(check)
+            card.addLayout(line)
+        card.addSpacing(8)
 
     @staticmethod
     def section(layout: QVBoxLayout) -> QLabel:
@@ -179,7 +189,8 @@ class SettingsPage(QWidget):
                               (self.language_combo, max(self.language_combo.findData(self.host.lang), 0)),
                               (self.opacity_slider, self.host.background_opacity),
                               (self.auto_check, settings.value(SETTING_AUTO_CHECK, True, type=bool)),
-                              (self.auto_install, settings.value(SETTING_AUTO_INSTALL, False, type=bool))):
+                              (self.auto_install, settings.value(SETTING_AUTO_INSTALL, False, type=bool)),
+                              (self.whats_new_auto, settings.value(SETTING_WHATS_NEW, True, type=bool))):
             blocked = widget.blockSignals(True)
             if isinstance(widget, QComboBox):
                 widget.setCurrentIndex(value)
@@ -214,7 +225,8 @@ class SettingsPage(QWidget):
         self.about_label.setText(self.t("about"))
         for (title, description), title_key, description_key in (
                 (self.theme_row, "settings_theme", "settings_theme_desc"),
-                (self.language_row, "settings_language", "settings_language_desc")):
+                (self.language_row, "settings_language", "settings_language_desc"),
+                (self.whats_new_row, "settings_whats_new_title", "settings_whats_new_desc")):
             title.setText(self.t(title_key))
             description.setText(self.t(description_key))
         self.opacity_row[0].setText(self.t("settings_opacity"))
@@ -229,6 +241,8 @@ class SettingsPage(QWidget):
         self.auto_check.setText(self.t("update_auto_check"))
         self.auto_install.setText(self.t("update_auto_install"))
         self.auto_install.setToolTip(self.t("update_auto_install_tip"))
+        self.whats_new_btn.setText(self.t("settings_whats_new_btn"))
+        self.whats_new_auto.setText(self.t("whats_new_auto"))
         self.refresh_opacity_state()
         self.refresh_update_status()
         self.about.update_copy()

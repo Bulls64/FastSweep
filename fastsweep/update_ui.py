@@ -21,6 +21,9 @@ from .theme import colors
 # Réglages mémorisés (clé → valeur par défaut) ; la vérification au démarrage est active, l'installation sans demande non.
 # Remembered settings (key → default); the startup check is on, installing without asking is off.
 SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_DISMISSED = "update_auto_check", "update_auto_install", "update_dismissed"
+# Fenêtre « Nouveautés » : affichée au premier démarrage d'une nouvelle version (désactivable), version déjà vue.
+# "What's new" window: shown on the first start of a new version (can be turned off), version already seen.
+SETTING_WHATS_NEW, SETTING_WHATS_NEW_SEEN = "whats_new_show", "whats_new_seen"
 
 
 class UpdateTask(QObject):
@@ -91,6 +94,20 @@ def compact_document(document: QTextDocument) -> None:
             text_format.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
             cursor.mergeCharFormat(text_format)
         block, first, after_list = block.next(), False, in_list
+
+
+def show_notes(browser: QTextBrowser, info: updater.UpdateInfo, lang: str, empty_text: str) -> bool:
+    """Affiche les notes d'une release, nettoyées et compactes ; ``empty_text`` s'il n'y en a pas. Vrai si notes.
+
+    Shows a release's notes, cleaned up and compact; ``empty_text`` when there are none. True if notes.
+    """
+    notes = updater.clean_notes(info.notes, lang, info.tag)
+    if notes:
+        browser.setMarkdown(notes)
+        compact_document(browser.document())
+    else:
+        browser.setPlainText(empty_text)
+    return bool(notes)
 
 
 def describe_error(strings: dict, key: str, detail: str) -> str:
@@ -199,12 +216,8 @@ class UpdateDialog(FluentDialog):
         else:
             lines.append(strings["update_uptodate"])
         self.status_label.setText("\n".join(lines))
-        notes = updater.clean_notes(info.notes, self.lang, info.tag) if info.newer else ""
-        if notes:
-            self.notes.setMarkdown(notes)
-            compact_document(self.notes.document())
-        else:
-            self.notes.setPlainText(strings["update_notes_none"] if info.newer else "")
+        if info.newer:
+            show_notes(self.notes, info, self.lang, strings["update_notes_none"])
         self.notes.setVisible(info.newer)
         self.progress.hide()
         self.refresh_buttons()
@@ -298,4 +311,98 @@ class UpdateDialog(FluentDialog):
 
     def reject(self) -> None:
         self.drop_task()  # fermer interrompt un téléchargement en cours ; ses résultats tardifs sont ignorés / closing interrupts a running download; its late results are ignored
+        super().reject()
+
+
+class WhatsNewDialog(FluentDialog):
+    """« Nouveautés de la vX » : notes de la dernière release publiée sur GitHub.
+
+    "What's new in vX": notes of the latest release published on GitHub.
+    ``info`` déjà connu (démarrage) ou cherché à l'ouverture. ``wants_update`` est vrai si l'utilisateur a demandé
+    à voir la mise à jour (release plus récente que la version installée).
+    ``info`` already known (startup) or looked up on opening. ``wants_update`` is true if the user asked to see
+    the update (release newer than the installed version).
+    """
+
+    def __init__(self, parent: QWidget | None, dark: bool, lang: str, settings, info: updater.UpdateInfo | None = None):
+        self.strings = strings = STRINGS[lang]
+        self.lang = lang
+        super().__init__(parent, strings["whats_new_title_plain"], dark)
+        self.heading = self.body.itemAt(0).widget()  # titre du dialogue, complété avec la version / dialog title, completed with the version
+        self.settings = settings
+        self.info: updater.UpdateInfo | None = None
+        self.task: UpdateTask | None = None
+        self.wants_update = False
+        self.setMinimumSize(620, 460)
+        self.date_label = QLabel()
+        self.date_label.setObjectName("muted")
+        self.body.addWidget(self.date_label)
+        self.notice = QLabel()  # release pas encore installée / release not installed yet
+        self.notice.setWordWrap(True)
+        self.notice.hide()
+        self.body.addWidget(self.notice)
+        self.notes = QTextBrowser()
+        self.notes.setOpenLinks(False)  # notes venues du réseau : aucun lien suivi / network notes: no link followed
+        self.notes.setAccessibleName(strings["whats_new_title_plain"])
+        self.body.addWidget(self.notes, 1)
+        self.auto_show = QCheckBox(strings["whats_new_auto"])
+        self.auto_show.setChecked(settings.value(SETTING_WHATS_NEW, True, type=bool))
+        self.auto_show.toggled.connect(lambda checked: settings.setValue(SETTING_WHATS_NEW, checked))
+        self.body.addWidget(self.auto_show)
+        self.update_button = self.add_footer_button(strings["whats_new_update"], "primaryButton", "download")
+        self.update_button.setIcon(glyph_icon("download", colors(dark)["onAccent"]))
+        self.update_button.hide()
+        self.github_button = self.add_footer_button(strings["whats_new_github"], icon="export")
+        close = self.add_footer_button(strings["close"])
+        self.update_button.clicked.connect(self.see_update)
+        self.github_button.clicked.connect(self.open_page)
+        close.clicked.connect(self.reject)
+        if info is None:
+            self.load()
+        else:
+            self.show_info(info)
+
+    def load(self) -> None:
+        self.github_button.setEnabled(False)
+        self.notes.setPlainText(self.strings["whats_new_loading"])
+        task = self.task = UpdateTask(self)
+        task.done.connect(self.show_info)
+        task.failed.connect(self.show_error)
+        task.start(lambda progress, stop: updater.check_latest())
+
+    def show_info(self, info: updater.UpdateInfo) -> None:
+        strings = self.strings
+        self.task = None
+        self.info = info
+        title = strings["whats_new_title"].format(version=info.version)
+        self.setWindowTitle(title)
+        self.heading.setText(title)
+        self.date_label.setText(strings["whats_new_published"].format(date=info.published_date) if info.published_date else "")
+        self.date_label.setVisible(bool(info.published_date))
+        show_notes(self.notes, info, self.lang, strings["update_notes_none"])
+        self.notice.setText(strings["whats_new_not_installed"].format(current=__version__))
+        self.notice.setVisible(info.newer)
+        self.update_button.setVisible(info.newer)
+        self.github_button.setEnabled(True)
+
+    def show_error(self, key: str, detail: str) -> None:
+        self.task = None
+        self.notes.setPlainText(describe_error(self.strings, key, detail))
+        self.github_button.setEnabled(True)  # la page des releases reste accessible / the releases page stays reachable
+
+    def open_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(self.info.page if self.info else updater.RELEASES_URL))
+
+    def see_update(self) -> None:
+        self.wants_update = True
+        self.accept()
+
+    def reject(self) -> None:
+        if self.task is not None:
+            for signal in (self.task.done, self.task.failed):
+                try:
+                    signal.disconnect()  # résultat tardif ignoré / late result ignored
+                except (RuntimeError, TypeError):
+                    pass
+            self.task = None
         super().reject()

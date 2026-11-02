@@ -154,6 +154,14 @@ STRINGS = {
         "settings_updates": "Mises à jour", "settings_updates_title": "Mises à jour de FastSweep",
         "settings_updates_desc": "FastSweep est à jour, ou n’a pas encore vérifié.", "settings_check_now": "Rechercher maintenant",
         "settings_update_show": "Voir la mise à jour", "settings_update_badge": "Mise à jour disponible : {version}",
+        # Nouveautés / What's new
+        "whats_new_title": "Nouveautés de la v{version}", "whats_new_title_plain": "Nouveautés",
+        "whats_new_loading": "Chargement des nouveautés depuis GitHub…", "whats_new_published": "Publiée le {date}",
+        "whats_new_not_installed": "Cette version n’est pas encore installée : vous avez la {current}.",
+        "whats_new_update": "Voir la mise à jour", "whats_new_github": "Voir sur GitHub",
+        "whats_new_auto": "Afficher les nouveautés après chaque mise à jour",
+        "settings_whats_new_title": "Nouveautés", "settings_whats_new_desc": "Notes de la dernière version publiée sur GitHub.",
+        "settings_whats_new_btn": "Voir les nouveautés",
     },
     "en": {
         "title": "FastSweep", "subtitle": "Uninstall manager", "classic": "Desktop apps", "store": "Microsoft Store apps",
@@ -300,5 +308,13 @@ STRINGS = {
         "settings_updates": "Updates", "settings_updates_title": "FastSweep updates",
         "settings_updates_desc": "FastSweep is up to date, or has not checked yet.", "settings_check_now": "Check now",
         "settings_update_show": "View the update", "settings_update_badge": "Update available: {version}",
+        # Nouveautés / What's new
+        "whats_new_title": "What's new in v{version}", "whats_new_title_plain": "What's new",
+        "whats_new_loading": "Loading what's new from GitHub…", "whats_new_published": "Published on {date}",
+        "whats_new_not_installed": "This version is not installed yet: you have {current}.",
+        "whats_new_update": "View the update", "whats_new_github": "View on GitHub",
+        "whats_new_auto": "Show what's new after each update",
+        "settings_whats_new_title": "What's new", "settings_whats_new_desc": "Notes of the latest version published on GitHub.",
+        "settings_whats_new_btn": "See what's new",
     },
 }

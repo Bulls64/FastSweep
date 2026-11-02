@@ -1694,9 +1694,10 @@ class HelperTests(unittest.TestCase):
     def test_startup_check_respects_the_opt_out_and_stays_quiet_when_offline(self):
         window = self.startup_window(self.info())
         window.settings.setValue("update_auto_check", False)
+        window.settings.setValue("whats_new_seen", main_window.__version__)  # nouveautés déjà vues / what's new already seen
         with patch.object(window, "show_updates") as show:
             window.startup_update_check()
-            self.assertIsNone(window._update_task)
+            self.assertIsNone(window._update_task)  # rien à demander à GitHub / nothing to ask GitHub
         window.settings.setValue("update_auto_check", True)
         with patch.object(updater, "check_latest", side_effect=updater.UpdateError("update_err_network", "offline")), \
                 patch.object(main_window.QMessageBox, "critical") as critical, \
@@ -1976,6 +1977,144 @@ class HelperTests(unittest.TestCase):
         window.settings_page.load()
         self.assertTrue(page.auto_check.isChecked())
         window.close()
+
+    # --- Fenêtre « Nouveautés » / "What's new" window ------------------------------------------------------
+
+    def current_info(self, **changes):
+        base = dict(version=main_window.__version__, tag="v" + main_window.__version__, newer=False,
+                    published="2026-11-02T10:08:36Z", notes=self.BILINGUAL_NOTES.replace("v1.0.2", "v" + main_window.__version__))
+        base.update(changes)
+        return self.info(**base)
+
+    def test_release_publication_date_is_shown_locally(self):
+        self.assertEqual(self.info(published="2026-11-02T10:08:36Z").published_date, "02/11/2026")
+        self.assertEqual(self.info(published="").published_date, "")
+        self.assertEqual(self.info(published="hier").published_date, "")
+
+    def test_whats_new_shows_the_installed_version_notes(self):
+        dialog = update_ui.WhatsNewDialog(None, False, "fr", main_window.open_settings(), self.current_info())
+        title = i18n.STRINGS["fr"]["whats_new_title"].format(version=main_window.__version__)
+        self.assertEqual((dialog.windowTitle(), dialog.heading.text()), (title, title))
+        self.assertEqual(dialog.date_label.text(), "Publiée le 02/11/2026")
+        self.assertIn("Nouveautés", dialog.notes.toPlainText())
+        self.assertNotIn("Fixes", dialog.notes.toPlainText())  # langue de l'interface seulement / interface language only
+        self.assertTrue(dialog.notice.isHidden())
+        self.assertTrue(dialog.update_button.isHidden())
+        with patch.object(update_ui.QDesktopServices, "openUrl") as open_url:
+            dialog.github_button.click()
+        self.assertEqual(open_url.call_args.args[0].toString(), updater.RELEASES_URL)
+        dialog.close()
+
+    def test_whats_new_offers_the_update_when_the_release_is_newer(self):
+        dialog = update_ui.WhatsNewDialog(None, False, "en", main_window.open_settings(), self.info(version="9.0.0", tag="v9.0.0"))
+        self.assertFalse(dialog.notice.isHidden())
+        self.assertIn(main_window.__version__, dialog.notice.text())
+        dialog.update_button.click()
+        self.assertTrue(dialog.wants_update)
+        self.assertEqual(dialog.result(), main_window.QDialog.DialogCode.Accepted)
+
+    def test_whats_new_loads_on_demand_and_reports_errors(self):
+        with patch.object(updater, "check_latest", return_value=self.current_info()):
+            dialog = update_ui.WhatsNewDialog(None, False, "fr", main_window.open_settings())
+            self.assertEqual(dialog.notes.toPlainText(), i18n.STRINGS["fr"]["whats_new_loading"])
+            self.assertTrue(self.wait_until(lambda: dialog.info is not None))
+        self.assertIn(main_window.__version__, dialog.windowTitle())
+        dialog.close()
+        with patch.object(updater, "check_latest", side_effect=updater.UpdateError("update_err_rate")):
+            dialog = update_ui.WhatsNewDialog(None, False, "fr", main_window.open_settings())
+            self.assertTrue(self.wait_until(lambda: i18n.STRINGS["fr"]["update_err_rate"] in dialog.notes.toPlainText()))
+        self.assertTrue(dialog.github_button.isEnabled())
+        dialog.close()
+
+    def test_whats_new_option_is_remembered(self):
+        dialog = update_ui.WhatsNewDialog(None, False, "fr", main_window.open_settings(), self.current_info())
+        self.assertTrue(dialog.auto_show.isChecked())  # actif par défaut / on by default
+        dialog.auto_show.setChecked(False)
+        self.assertFalse(main_window.open_settings().value("whats_new_show", True, type=bool))
+        dialog.close()
+
+    def test_whats_new_appears_once_on_the_first_start_of_a_version(self):
+        window = self.startup_window(self.current_info())
+        with patch.object(window, "show_whats_new") as whats_new, patch.object(window, "show_updates") as updates:
+            for _ in range(2):
+                window.startup_update_check()
+                self.assertTrue(self.wait_until(lambda: window._update_task is None))
+        whats_new.assert_called_once()
+        self.assertEqual(whats_new.call_args.args[0].version, main_window.__version__)
+        updates.assert_not_called()
+        self.assertEqual(window.settings.value("whats_new_seen"), main_window.__version__)
+        window.close()
+
+    def test_whats_new_respects_its_option_and_leaves_room_for_the_update_prompt(self):
+        window = self.startup_window(self.current_info())
+        window.settings.setValue("whats_new_show", False)
+        with patch.object(window, "show_whats_new") as whats_new:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: window._update_task is None))
+        whats_new.assert_not_called()
+        window.close()
+        # Une version plus récente existe : la proposition de mise à jour, pas les nouveautés (une fenêtre à la fois).
+        # A newer version exists: the update offer, not what's new (one window at a time).
+        window = self.startup_window(self.info(version="9.0.0", tag="v9.0.0"))
+        with patch.object(window, "show_whats_new") as whats_new, patch.object(window, "show_updates") as updates:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: updates.called))
+        whats_new.assert_not_called()
+        self.assertEqual(window.settings.value("whats_new_seen", ""), "")  # reste à montrer / still to show
+        window.close()
+
+    def test_whats_new_alone_never_offers_an_update(self):
+        window = self.startup_window(self.info(version="9.0.0", tag="v9.0.0"))
+        window.settings.setValue("update_auto_check", False)
+        with patch.object(window, "show_whats_new") as whats_new, patch.object(window, "show_updates") as updates:
+            window.startup_update_check()  # requête faite pour les nouveautés / request made for what's new
+            self.assertTrue(self.wait_until(lambda: window._update_task is None))
+        whats_new.assert_not_called()
+        updates.assert_not_called()
+        window.close()
+
+    def test_whats_new_can_lead_to_the_update_window(self):
+        window = self.checkbox_window()
+        def accept_update(dialog):
+            dialog.wants_update = True
+            dialog.info = self.info(version="9.0.0", tag="v9.0.0")
+            return 1
+        with patch.object(main_window.WhatsNewDialog, "exec", accept_update), \
+                patch.object(window, "show_updates") as updates, \
+                patch.object(updater, "check_latest", return_value=self.info(version="9.0.0", tag="v9.0.0")):
+            window.show_whats_new(self.info(version="9.0.0", tag="v9.0.0"))
+        updates.assert_called_once()
+        self.assertEqual(window.update_info.version, "9.0.0")
+        window.close()
+
+    def test_settings_open_whats_new_and_remember_its_option(self):
+        window = self.checkbox_window()
+        page = window.settings_page
+        self.assertTrue(page.whats_new_auto.isChecked())
+        page.whats_new_auto.setChecked(False)
+        self.assertFalse(window.settings.value("whats_new_show", True, type=bool))
+        self.assertEqual(page.whats_new_btn.text(), window.t("settings_whats_new_btn"))
+        with patch.object(main_window.WhatsNewDialog, "exec", return_value=0) as run, \
+                patch.object(updater, "check_latest", return_value=self.current_info()):
+            page.whats_new_btn.click()
+        run.assert_called_once()
+        window.close()
+
+    def test_a_closed_window_ignores_a_late_github_reply(self):
+        window = self.startup_window(self.current_info())
+        release = threading.Event()
+        def slow():
+            release.wait(5)
+            return self.current_info()
+        with patch.object(updater, "check_latest", side_effect=slow), \
+                patch.object(window, "show_whats_new") as whats_new, patch.object(window, "show_updates") as updates:
+            window.startup_update_check()
+            window.close()
+            release.set()
+            QTest.qWait(200)
+            self.qt_app.processEvents()
+        whats_new.assert_not_called()
+        updates.assert_not_called()
 
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 

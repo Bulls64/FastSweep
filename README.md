@@ -58,6 +58,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 - WinUI 3 style, light and dark themes, English and French.
 - Acrylic translucency on Windows 11 22H2 and later, with a **background opacity** slider in Settings (0% shows the most of what is behind, 100% makes backgrounds solid; text stays sharp). Older versions keep the same colors on opaque backgrounds.
 - A **Settings** page groups theme, language, background opacity, updates and the About section.
+- A **What's new** window lists the latest GitHub release notes (date, compact, in the interface language). It opens once on the first start of a new version (can be turned off) and on demand from Settings; if that release is not installed yet, it offers the update.
 - **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from Settings; the Settings entry lights up when a new version is available. It shows what's new, downloads `FastSweep.exe`, verifies it (size, SHA-256 checksum, file type, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
 - Local history of every operation, which can be exported to JSON.
 - Uninstall options (restore point, silent mode, automatic scan) are remembered between sessions.
@@ -186,6 +187,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 - Style WinUI 3, thèmes clair et sombre, français et anglais.
 - Transparence Acrylic sous Windows 11 22H2 et plus récent, avec un curseur **d'opacité des fonds** dans les Réglages (0 % laisse le plus voir l'arrière-plan, 100 % rend les fonds pleins ; le texte reste net). Les versions plus anciennes gardent les mêmes couleurs sur des fonds opaques.
 - Une page **Réglages** regroupe le thème, la langue, l'opacité des fonds, les mises à jour et la section « À propos ».
+- Une fenêtre **Nouveautés** liste les notes de la dernière release GitHub (date, rendu compact, langue de l'interface). Elle s'ouvre une fois au premier démarrage d'une nouvelle version (désactivable) et à la demande depuis les Réglages ; si cette release n'est pas encore installée, elle propose la mise à jour.
 - **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis les Réglages ; l'entrée « Réglages » s'allume quand une nouvelle version est disponible. Il affiche les nouveautés, télécharge `FastSweep.exe`, le vérifie (taille, somme SHA-256, type de fichier, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
 - Historique local de toutes les opérations, exportable en JSON.
 - Les options de désinstallation (point de restauration, mode silencieux, analyse automatique) sont mémorisées d'une session à l'autre.
