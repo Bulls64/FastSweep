@@ -1480,14 +1480,14 @@ class HelperTests(unittest.TestCase):
         exe = Path(temporary) / "FastSweep.exe"
         exe.write_bytes(b"MZ-old")
         staged = updater.staged_path(exe)
-        staged.write_bytes(b"MZ-new")
+        staged.write_bytes(self.EXE)  # le fichier de la release de self.info() / the file of self.info()'s release
         return exe, staged
 
     def test_install_swaps_the_executable_and_keeps_the_old_one_aside(self):
         with tempfile.TemporaryDirectory() as temporary:
             exe, staged = self.make_install(temporary)
-            updater.install(staged, exe)
-            self.assertEqual(exe.read_bytes(), b"MZ-new")
+            updater.install(staged, exe, self.info())
+            self.assertEqual(exe.read_bytes(), self.EXE)
             self.assertEqual(exe.with_name("FastSweep.exe.old").read_bytes(), b"MZ-old")
             self.assertFalse(staged.exists())
 
@@ -1496,7 +1496,7 @@ class HelperTests(unittest.TestCase):
             exe, staged = self.make_install(temporary)
             with patch.object(updater.os, "replace", side_effect=PermissionError("verrouillé")):
                 with self.assertRaises(updater.UpdateError) as caught:
-                    updater.install(staged, exe)
+                    updater.install(staged, exe, self.info())
             self.assertEqual(caught.exception.key, "update_err_write")
             self.assertEqual(exe.read_bytes(), b"MZ-old")  # l'application reste utilisable / the app stays usable
             self.assertTrue(staged.exists())
@@ -1748,7 +1748,7 @@ class HelperTests(unittest.TestCase):
                     patch.object(window, "record_history") as record, \
                     patch.object(window, "close") as close:
                 window.apply_update(staged)
-            self.assertEqual(exe.read_bytes(), b"MZ-new")
+            self.assertEqual(exe.read_bytes(), self.EXE)
         restart.assert_called_once_with(exe)
         close.assert_called_once()
         self.assertEqual(record.call_args.args[:3], ("FastSweep", "update", "success"))
@@ -2314,6 +2314,97 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(OSError) as raised:
                 cleanup.recycle_path(r"E:\Acme")
         self.assertEqual(str(raised.exception), cleanup.NOT_RECYCLABLE_ERROR)
+
+    # --- Audit de sécurité : points 8, 9 et 11 / Security audit: points 8, 9 and 11 ----------------------
+
+    def test_install_refuses_a_file_changed_after_its_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            staged.write_bytes(b"MZ" + b"\x00" * 5000)  # même taille, autre contenu / same size, other content
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater.install(staged, exe, self.info())
+            self.assertEqual(caught.exception.key, "update_err_changed")
+            self.assertEqual(exe.read_bytes(), b"MZ-old")  # rien d'installé / nothing installed
+            self.assertFalse(staged.exists())  # fichier suspect supprimé / suspicious file deleted
+
+    def test_apply_update_needs_the_release_to_check_against(self):
+        window = self.checkbox_window()
+        window.update_info = None
+        with tempfile.TemporaryDirectory() as temporary:
+            exe, staged = self.make_install(temporary)
+            with patch.object(updater, "current_executable", return_value=exe), \
+                    patch.object(main_window.QMessageBox, "critical") as critical, \
+                    patch.object(window, "record_history"), patch.object(updater, "restart") as restart:
+                window.apply_update(staged)
+            self.assertEqual(exe.read_bytes(), b"MZ-old")
+        critical.assert_called_once()
+        restart.assert_not_called()
+        window.close()
+
+    def test_downloads_and_github_replies_are_capped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "FastSweep.exe.new"
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater.download(self.info(size=updater.MAX_DOWNLOAD + 1), target)
+            self.assertEqual(caught.exception.key, "update_err_too_big")
+            # Taille inconnue : le flux est coupé au plafond. / Unknown size: the stream is cut at the cap.
+            response = self.FakeResponse(self.EXE)
+            response.headers = {}
+            with patch.object(updater, "open_url", return_value=response), patch.object(updater, "MAX_DOWNLOAD", 1000), \
+                    patch.object(updater, "CHUNK", 256):
+                with self.assertRaises(updater.UpdateError) as caught:
+                    updater.download(self.info(size=0, sha256=""), target)
+            self.assertEqual(caught.exception.key, "update_err_too_big")
+            self.assertEqual(list(Path(temporary).iterdir()), [])  # rien laissé / nothing left
+        with patch.object(updater, "open_url", return_value=self.FakeResponse(b"{" + b" " * 64 + b"}")), \
+                patch.object(updater, "MAX_JSON", 32):
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater.check_latest()
+        self.assertEqual(caught.exception.key, "update_err_data")
+
+    REG_HEADER = "Windows Registry Editor Version 5.00\r\n\r\n"
+
+    def reg_bytes(self, *keys):
+        text = self.REG_HEADER + "".join(f"[{key}]\r\n\"Value\"=\"1\"\r\n\r\n" for key in keys)
+        return b"\xff\xfe" + text.encode("utf-16-le")  # comme reg.exe export / like reg.exe export
+
+    def test_registry_backups_restored_as_administrator_must_be_trusted(self):
+        user_only = self.reg_bytes(r"HKEY_CURRENT_USER\Software\Acme", r"-HKEY_CURRENT_USER\Software\Old")
+        machine = self.reg_bytes(r"HKEY_CURRENT_USER\Software\Acme", r"HKEY_LOCAL_MACHINE\SOFTWARE\Acme")
+        self.assertEqual(cleanup.reg_file_hives(machine), ["HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE"])
+        with patch.object(cleanup, "trusted_backup_registered", return_value=False):
+            self.assertTrue(cleanup.backup_is_trusted(user_only))  # rien qu'un programme sans droits ne puisse écrire / nothing a program without rights could not write
+            self.assertFalse(cleanup.backup_is_trusted(machine))
+            self.assertFalse(cleanup.backup_is_trusted(b""))
+        with patch.object(cleanup, "trusted_backup_registered", side_effect=lambda digest: digest == hashlib.sha256(machine).hexdigest()):
+            self.assertTrue(cleanup.backup_is_trusted(machine))  # faite par FastSweep en administrateur / made by FastSweep as administrator
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "01-Acme.reg"
+            path.write_bytes(machine)
+            done = subprocess.CompletedProcess([], 0, "", "")
+            with patch.object(cleanup, "is_admin", return_value=True), \
+                    patch.object(cleanup, "trusted_backup_registered", return_value=False), \
+                    patch.object(cleanup, "run_hidden", return_value=done) as run:
+                self.assertEqual(cleanup.restore_registry_backup(str(path)), (False, cleanup.UNTRUSTED_BACKUP_ERROR))
+                run.assert_not_called()
+            with patch.object(cleanup, "is_admin", return_value=False), \
+                    patch.object(cleanup, "run_hidden", return_value=done) as run:
+                self.assertEqual(cleanup.restore_registry_backup(str(path)), (True, ""))  # sans droits : aucun risque / without rights: no risk
+            self.assertEqual(run.call_args.args[0][:2], [system.system_tool("reg.exe"), "import"])
+
+    def test_backups_made_as_administrator_are_registered(self):
+        candidate = models.RegistryCandidate(cleanup.winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Acme", "HKLM", "high", "key-name")
+        def export(args, timeout):
+            Path(args[3]).write_bytes(self.reg_bytes(r"HKEY_LOCAL_MACHINE\SOFTWARE\Acme"))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(cleanup, "registry_backup_root", return_value=Path(temporary)), \
+                patch.object(cleanup, "run_hidden", side_effect=export), \
+                patch.object(cleanup, "is_admin", return_value=True), \
+                patch.object(cleanup, "register_trusted_backups") as register:
+            folder = cleanup.backup_registry_keys([candidate])
+            files = list(register.call_args.args[0])
+            self.assertEqual(files, [folder / "01-Acme.reg"])
 
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 

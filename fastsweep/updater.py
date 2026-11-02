@@ -35,6 +35,10 @@ DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
 TRUSTED_HOSTS = ("github.com", "githubusercontent.com")
 TIMEOUT = 10  # secondes par requête / seconds per request
 CHUNK = 256 * 1024
+# Plafonds : un serveur qui enverrait sans fin ne remplit ni la mémoire ni le disque (l'exe fait environ 60 Mo).
+# Caps: a server that would send endlessly fills neither memory nor disk (the exe is about 60 MB).
+MAX_DOWNLOAD = 200 * 1024 * 1024
+MAX_JSON = 2 * 1024 * 1024
 LEFTOVER_SUFFIXES = (".old", ".new", ".part")  # fichiers que la mise à jour crée à côté de l'exécutable / files the update creates next to the executable
 
 
@@ -118,7 +122,10 @@ def _trusted(url: str) -> bool:
 def _fetch_json(url: str):
     try:
         with open_url(_request(url, "application/vnd.github+json")) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read(MAX_JSON + 1)
+        if len(body) > MAX_JSON:
+            raise UpdateError("update_err_data")
+        return json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as exc:  # avant URLError, dont elle hérite / before URLError, which it inherits from
         if exc.code in (403, 429):
             raise UpdateError("update_err_rate") from exc
@@ -207,6 +214,8 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
     """
     if not info.installable or not info.url.startswith(DOWNLOAD_PREFIX):
         raise UpdateError("update_no_exe")
+    if info.size > MAX_DOWNLOAD:
+        raise UpdateError("update_err_too_big", _megabytes(info.size))
     part = destination.with_name(destination.name + ".part")
     digest = hashlib.sha256()
     done = 0
@@ -215,6 +224,9 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
             if not _trusted(response.geturl()):  # redirection vers un hôte inattendu / redirect to an unexpected host
                 raise UpdateError("update_err_host", urlparse(response.geturl()).hostname or "")
             total = info.size or _content_length(response)
+            if total > MAX_DOWNLOAD:
+                raise UpdateError("update_err_too_big", _megabytes(total))
+            limit = info.size or MAX_DOWNLOAD  # jamais plus que la taille annoncée / never more than the announced size
             with part.open("wb") as out:
                 while True:
                     if stop is not None and stop.is_set():
@@ -222,18 +234,14 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
                     chunk = response.read(CHUNK)
                     if not chunk:
                         break
+                    done += len(chunk)
+                    if done > limit:
+                        raise UpdateError("update_err_too_big", _megabytes(done))
                     out.write(chunk)
                     digest.update(chunk)
-                    done += len(chunk)
                     if progress is not None:
                         progress(done, total)
-        if info.size and done != info.size:
-            raise UpdateError("update_err_size", f"{done} / {info.size}")
-        if info.sha256 and digest.hexdigest() != info.sha256:
-            raise UpdateError("update_err_hash")
-        with part.open("rb") as check:
-            if check.read(2) != b"MZ":  # un exécutable Windows commence par « MZ » / a Windows executable starts with "MZ"
-                raise UpdateError("update_err_notexe")
+        _check(part, info, done, digest.hexdigest())
         os.replace(part, destination)
     except PermissionError as exc:
         raise UpdateError("update_err_write", str(exc)) from exc
@@ -245,6 +253,50 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
         except OSError:
             pass
     return destination
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / (1024 * 1024):.0f} MB"
+
+
+def _check(path: Path, info: UpdateInfo, size: int, sha256: str) -> None:
+    """Taille, somme SHA-256 et en-tête d'exécutable conformes à la release, sinon UpdateError.
+
+    Size, SHA-256 sum and executable header matching the release, otherwise UpdateError.
+    """
+    if info.size and size != info.size:
+        raise UpdateError("update_err_size", f"{size} / {info.size}")
+    if info.sha256 and sha256 != info.sha256:
+        raise UpdateError("update_err_hash")
+    with path.open("rb") as check:
+        if check.read(2) != b"MZ":  # un exécutable Windows commence par « MZ » / a Windows executable starts with "MZ"
+            raise UpdateError("update_err_notexe")
+
+
+def verify_staged(staged: Path, info: UpdateInfo) -> None:
+    """Revérifie le fichier prêt à installer, juste avant de remplacer l'exécutable.
+
+    Checks the file ready to install again, right before replacing the executable.
+    Entre le téléchargement et l'installation (qui peut attendre que FastSweep soit inactif), un autre programme
+    aurait pu remplacer le fichier ; s'il ne correspond plus à la release, il est supprimé et rien n'est installé.
+    Between the download and the install (which may wait until FastSweep is idle), another program could have
+    replaced the file; if it no longer matches the release, it is deleted and nothing is installed.
+    """
+    digest, size = hashlib.sha256(), 0
+    try:
+        with staged.open("rb") as source:
+            while chunk := source.read(CHUNK):
+                size += len(chunk)
+                if size > MAX_DOWNLOAD:
+                    raise UpdateError("update_err_changed")
+                digest.update(chunk)
+        _check(staged, info, size, digest.hexdigest())
+    except (UpdateError, OSError) as exc:
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise UpdateError("update_err_changed") from exc
 
 
 def _content_length(response) -> int:
@@ -281,13 +333,16 @@ def staged_path(exe: Path) -> Path:
     return exe.with_name(exe.name + ".new")
 
 
-def install(staged: Path, exe: Path) -> None:
+def install(staged: Path, exe: Path, info: UpdateInfo) -> None:
     """Remplace ``exe`` par ``staged`` ; l'ancien exécutable est mis de côté (``.old``) et remis en place si ça échoue.
 
     Replaces ``exe`` with ``staged``; the old executable is set aside (``.old``) and put back if it fails.
+    ``staged`` est d'abord revérifié contre ``info`` (la release téléchargée). / ``staged`` is first checked again
+    against ``info`` (the downloaded release).
     Windows interdit de supprimer un exécutable en cours d'exécution mais autorise à le renommer.
     Windows forbids deleting a running executable but allows renaming it.
     """
+    verify_staged(staged, info)
     old = exe.with_name(exe.name + ".old")
     try:
         old.unlink(missing_ok=True)  # reste d'une mise à jour précédente / leftover from a previous update

@@ -32,6 +32,7 @@ from . import __version__, updater
 from .backdrop import ACRYLIC, apply_backdrop, prepare_translucency, set_dark_title_bar
 from .cleanup import (
     NOT_RECYCLABLE_ERROR,
+    UNTRUSTED_BACKUP_ERROR,
     backup_registry_keys,
     delete_registry_tree,
     file_candidates_for,
@@ -1115,7 +1116,8 @@ class MainWindow(QMainWindow):
             if ok:
                 QMessageBox.information(self, self.t("backup_registry"), self.t("backup_restored"))
             else:
-                QMessageBox.critical(self, self.t("backup_registry"), self.t("backup_restore_failed").format(error=detail))
+                error = self.t("backup_untrusted") if detail == UNTRUSTED_BACKUP_ERROR else detail
+                QMessageBox.critical(self, self.t("backup_registry"), self.t("backup_restore_failed").format(error=error))
         self.run_background(lambda: restore_registry_backup(path), restored)
 
     def elevate_application(self) -> None:
@@ -1299,10 +1301,13 @@ class MainWindow(QMainWindow):
         if self._busy:  # le fichier téléchargé reste, il sera repris à la prochaine mise à jour / the file stays, it is reused at the next update
             QMessageBox.information(self, APP_NAME, self.t("update_wait_busy"))
             return
-        version = self.update_info.version if self.update_info else ""
+        info = self.update_info
+        version = info.version if info else ""
         self.status_label.setText(self.t("update_installing").format(version=version))
         try:
-            updater.install(staged, exe)
+            if info is None:  # rien contre quoi revérifier le fichier / nothing to check the file against
+                raise updater.UpdateError("update_err_changed")
+            updater.install(staged, exe, info)
         except updater.UpdateError as exc:
             self.record_history("FastSweep", "update", "failed", {"from": __version__, "to": version, "error": str(exc)})
             QMessageBox.critical(self, APP_NAME, self.t("update_install_error").format(

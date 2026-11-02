@@ -5,6 +5,7 @@ Leftover scans and cleanup: registry keys (backed up first) and files (Recycle B
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from .inventory import FILE_ATTRIBUTE_REPARSE_POINT, SOFTWARE_ROOTS, UNINSTALL_ROOTS, registry_value
 from .models import AppEntry, FileCandidate, RegistryCandidate, keep_strongest, sort_by_confidence
-from .system import app_data_dir, is_windows, run_hidden, system_dll, system_tool
+from .system import app_data_dir, is_admin, is_windows, run_hidden, system_dll, system_tool
 
 
 MIN_REGISTRY_MATCH_LENGTH = 2
@@ -136,13 +137,96 @@ def backup_registry_keys(candidates: list[RegistryCandidate]) -> Path:
                 raise OSError(result.stderr.strip() or f"reg.exe export failed for {candidate.path}")
             manifest.append({"file": target.name, "registry_path": registry_path})
         (folder / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        if is_admin():
+            register_trusted_backups(folder / entry["file"] for entry in manifest)
         return folder
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
 
 
+# Le dossier des sauvegardes s'écrit sans droits : un programme malveillant pourrait y modifier un fichier .reg pour
+# qu'une restauration faite en administrateur écrive dans HKLM. Les empreintes des sauvegardes faites en
+# administrateur sont donc notées dans HKLM, que seul un administrateur peut modifier.
+# The backup folder is writable without rights: a malicious program could change a .reg file there so that a
+# restore made as administrator writes to HKLM. The fingerprints of backups made as administrator are therefore
+# recorded in HKLM, which only an administrator can change.
+TRUSTED_BACKUPS_KEY = r"SOFTWARE\FastSweep\RegistryBackups"
+UNTRUSTED_BACKUP_ERROR = "untrusted-backup"  # traduit par l'interface / translated by the interface
+
+
+def file_sha256(path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def register_trusted_backups(files) -> None:
+    """Note dans HKLM l'empreinte de sauvegardes faites en administrateur (au mieux : un échec n'empêche rien).
+
+    Records in HKLM the fingerprint of backups made as administrator (best effort: a failure prevents nothing).
+    """
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, TRUSTED_BACKUPS_KEY, 0,
+                                winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY) as key:
+            for path in files:
+                winreg.SetValueEx(key, file_sha256(path), 0, winreg.REG_SZ, Path(path).name)
+    except (AttributeError, OSError):
+        pass
+
+
+def trusted_backup_registered(digest: str) -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, TRUSTED_BACKUPS_KEY, 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            winreg.QueryValueEx(key, digest)
+            return True
+    except (AttributeError, OSError):
+        return False
+
+
+def reg_file_hives(data: bytes) -> list[str]:
+    """Ruches que vise un fichier .reg (une par en-tête de clé, « [HKEY_…\\…] » ou « [-HKEY_…] »).
+
+    Hives a .reg file targets (one per key header, "[HKEY_…\\…]" or "[-HKEY_…]").
+    """
+    text = data.decode("utf-16", errors="replace") if data[:2] in (b"\xff\xfe", b"\xfe\xff") \
+        else data.decode("utf-8", errors="replace")
+    hives = []
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("\ufeff")
+        if stripped.startswith("["):
+            hives.append(stripped.lstrip("[-").strip().split("\\")[0].split("]")[0].strip().upper())
+    return hives
+
+
+def backup_is_trusted(data: bytes) -> bool:
+    """Vrai si l'import ne peut rien écrire qu'un programme sans droits ne pourrait écrire lui-même (HKCU seul),
+    ou si cette sauvegarde exacte a été faite par FastSweep en administrateur.
+
+    True if the import can write nothing a program without rights could not write itself (HKCU only),
+    or if this exact backup was made by FastSweep as administrator.
+    """
+    hives = reg_file_hives(data)
+    if hives and all(hive in ("HKEY_CURRENT_USER", "HKCU") for hive in hives):
+        return True
+    return trusted_backup_registered(hashlib.sha256(data).hexdigest())
+
+
 def restore_registry_backup(path: str) -> tuple[bool, str]:
+    """Importe une sauvegarde .reg ; en administrateur, seulement si elle est digne de confiance (voir plus haut).
+
+    Imports a .reg backup; as administrator, only if it is trustworthy (see above).
+    """
+    if is_admin():
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            return False, str(exc)
+        if not backup_is_trusted(data):
+            return False, UNTRUSTED_BACKUP_ERROR
     result = run_hidden([system_tool("reg.exe"), "import", path], timeout=60)
     return result.returncode == 0, result.stderr.strip()
 
