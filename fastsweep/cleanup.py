@@ -23,6 +23,17 @@ from .system import app_data_dir, is_windows, run_hidden
 
 MIN_REGISTRY_MATCH_LENGTH = 2
 
+# Dossiers et clés partagés par Windows et de nombreux programmes, sous les racines analysées : jamais proposés,
+# même si une application porte exactement ce nom (« Microsoft », « Programs », « Common Files »…).
+# Folders and keys shared by Windows and many programs, under the scanned roots: never offered,
+# even when an application bears exactly that name ("Microsoft", "Programs", "Common Files"…).
+SHARED_NAMES = frozenset({
+    "microsoft", "windows", "windowsnt", "windowsapps", "packages", "programs", "temp", "commonfiles",
+    "microsoftnet", "internetexplorer", "windowsdefender", "windowsmail", "windowsmediaplayer",
+    "windowsphotoviewer", "windowssidebar", "windowspowershell", "modifiablewindowsapps", "crashdumps",
+    "classes", "clients", "policies", "registeredapplications", "wow6432node", "odbc",
+})
+
 
 def registry_candidates(app: AppEntry) -> list[RegistryCandidate]:
     target = normalize_name(app.name)
@@ -38,6 +49,8 @@ def registry_candidates(app: AppEntry) -> list[RegistryCandidate]:
     roots.extend((hive, root, label, False) for hive, root, label in SOFTWARE_ROOTS)
 
     def add(hive: int, path: str, label: str, confidence: str, reason: str) -> None:
+        if normalize_name(path.rsplit("\\", 1)[-1]) in SHARED_NAMES:
+            return
         candidate = RegistryCandidate(hive, path, label, confidence, reason)
         keep_strongest(found, candidate.identity, candidate)
 
@@ -150,6 +163,8 @@ def file_candidates(app: AppEntry) -> list[FileCandidate]:
             if resolved.name in {"", ".", ".."} or any(part.casefold() == "windowsapps" for part in resolved.parts):
                 return
             if not (resolved.is_dir() or resolved.is_file()) or path_is_reparse_point(resolved):
+                return
+            if normalize_name(resolved.name if resolved.is_dir() else resolved.stem) in SHARED_NAMES:
                 return
             keep_strongest(found, str(resolved).casefold(), FileCandidate(str(resolved), confidence, reason))
         except (OSError, ValueError):

@@ -4,6 +4,8 @@ WinUI 3 components drawn by FastSweep: navigation, pill selection, checkbox tabl
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
@@ -310,6 +312,25 @@ class CheckTable(FluentTable):
     def make_header(self, dark: bool) -> QHeaderView:
         self.check_header = CheckHeader(self, dark)
         return self.check_header
+
+    @contextmanager
+    def rebuilding(self, rows: int):
+        """Remplit le tableau d'un coup : ni tri, ni signaux, ni redessin pendant l'opération, puis cases resynchronisées.
+
+        Fills the table in one go: no sorting, signals or repaint meanwhile, then boxes resynchronized.
+        """
+        was_blocked = self.blockSignals(True)
+        self.setUpdatesEnabled(False)
+        self.setSortingEnabled(False)
+        try:
+            self.setRowCount(rows)
+            yield
+        finally:
+            self.setSortingEnabled(True)
+            self.setUpdatesEnabled(True)
+            self.blockSignals(was_blocked)
+        self.setVisible(bool(rows))
+        self.sync_checks()  # case d'en-tête, puis compteur et boutons du propriétaire / header box, then the owner's counter and buttons
 
     def set_theme(self, dark: bool) -> None:
         self.check_header.set_theme(dark)

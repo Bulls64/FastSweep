@@ -69,7 +69,10 @@ def parse_creation_time(value) -> datetime | None:
         return moment.replace(tzinfo=timezone(offset))
     match = _DOTNET_DATE.match(text)
     if match:
-        return datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):  # horodatage hors limites / timestamp out of range
+            return None
     try:
         moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:

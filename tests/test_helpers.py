@@ -2116,6 +2116,112 @@ class HelperTests(unittest.TestCase):
         whats_new.assert_not_called()
         updates.assert_not_called()
 
+    # --- Optimisation : défauts corrigés / Optimization: fixed defects ----------------------------------
+
+    def test_startup_opens_nothing_over_an_open_window(self):
+        window = self.startup_window(self.info(version="9.0.0", tag="v9.0.0"))
+        with patch.object(main_window.QApplication, "activeModalWidget", return_value=object()), \
+                patch.object(window, "show_whats_new") as whats_new, patch.object(window, "show_updates") as updates:
+            window.startup_update_check()
+            self.assertTrue(self.wait_until(lambda: window._update_task is None))
+        whats_new.assert_not_called()
+        updates.assert_not_called()
+        self.assertEqual(window.update_info.version, "9.0.0")  # l'entrée « Réglages » s'allume quand même / the entry still lights up
+        self.assertEqual(window.settings.value("update_dismissed", ""), "")  # proposition encore due / offer still due
+        window.close()
+
+    def test_update_window_waits_for_a_running_automatic_download(self):
+        window = self.checkbox_window()
+        window._auto_downloading = True
+        with patch.object(main_window, "UpdateDialog") as dialog, \
+                patch.object(main_window.QMessageBox, "information") as told:
+            window.show_updates()
+        dialog.assert_not_called()  # un second téléchargement écraserait le premier / a second download would clobber the first
+        told.assert_called_once()
+        window.drop_update_task()
+        self.assertFalse(window._auto_downloading)
+        window.close()
+
+    def test_automatic_install_waits_until_fastsweep_is_idle(self):
+        window = self.checkbox_window()
+        staged = Path("FastSweep.exe.new")
+        with patch.object(window, "apply_update") as apply, patch.object(main_window.QTimer, "singleShot") as later:
+            window._busy = True
+            window.auto_update_downloaded(staged)
+            apply.assert_not_called()
+            later.assert_called_once()
+            window._busy = False
+            later.call_args.args[1]()  # nouvel essai / retry
+        apply.assert_called_once_with(staged)
+        window.close()
+
+    def test_switching_pages_refreshes_once(self):
+        window = self.checkbox_window()
+        with patch.object(window, "update_copy") as copy, patch.object(window, "populate_table") as populate:
+            window.switch_mode("store")
+            self.assertEqual((copy.call_count, populate.call_count), (1, 1))
+            window.switch_mode("store")  # déjà affichée / already shown
+            self.assertEqual((copy.call_count, populate.call_count), (1, 1))
+            window.switch_mode("settings")
+            window.switch_mode("store")  # retour sans changer de liste / back without changing the list
+            self.assertEqual((copy.call_count, populate.call_count), (3, 1))
+        self.assertEqual((window.active_page, window.mode), ("apps", "store"))
+        self.assertTrue(window.store_nav.isChecked() and not window.settings_nav.isChecked())
+        window.close()
+
+    def test_a_pending_opacity_change_survives_a_refresh(self):
+        window = self.checkbox_window()
+        page = window.settings_page
+        page.opacity_slider.setValue(80)  # le redessin attend une courte pause / repaint waits for a short pause
+        self.assertTrue(page.opacity_timer.isActive())
+        window.toggle_theme()  # recharge les contrôles entre-temps / reloads the controls meanwhile
+        self.assertEqual((page.opacity_slider.value(), window.background_opacity), (80, 80))
+        window.set_background_opacity(main_window.DEFAULT_OPACITY)
+        window.close()
+
+    def test_cleanup_never_offers_shared_folders_or_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary) / "LocalAppData"
+            for name in ("Microsoft", "Programs", "Temp"):
+                (local / name).mkdir(parents=True)
+            env = {"LOCALAPPDATA": str(local), "APPDATA": "", "PROGRAMDATA": "", "PROGRAMFILES": "", "PROGRAMFILES(X86)": ""}
+            with patch.dict(os.environ, env):
+                for name in ("Microsoft", "Programs"):
+                    paths = [c.path for c in cleanup.file_candidates(models.AppEntry(name=name, location=str(local / name)))]
+                    self.assertEqual(paths, [], name)
+        keys = {"HKLM\\SOFTWARE": {}, "HKLM\\SOFTWARE\\Microsoft": {}, "HKLM\\SOFTWARE\\Classes": {}}
+        with FakeRegistry(keys):
+            for name in ("Microsoft", "Classes"):
+                self.assertEqual(cleanup.registry_candidates(models.AppEntry(name=name)), [], name)
+
+    def test_unreadable_history_or_dates_do_not_crash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "history.json"
+            path.write_bytes(b"\xff\xfe\x00garbage")  # ni UTF-8 ni JSON / neither UTF-8 nor JSON
+            with patch.object(history, "operation_history_path", return_value=path):
+                self.assertEqual(history.load_operation_history(), [])
+        self.assertIsNone(restore_points.parse_creation_time("/Date(99999999999999999)/"))
+        self.assertIn(self.info(published="9999-12-31T23:59:59+14:00").published_date, ("", "31/12/9999"))  # hors limites selon le fuseau / out of range depending on the zone
+
+    def test_download_ignores_an_invalid_content_length(self):
+        class Response:
+            headers = {"Content-Length": "lots"}
+        self.assertEqual(updater._content_length(Response()), 0)
+        Response.headers = {"Content-Length": "-5"}
+        self.assertEqual(updater._content_length(Response()), 0)
+        Response.headers = {"Content-Length": "1234"}
+        self.assertEqual(updater._content_length(Response()), 1234)
+
+    def test_cancelling_an_update_task_silences_it(self):
+        task = update_ui.UpdateTask()
+        received = []
+        task.done.connect(received.append)
+        task.cancel()
+        self.assertTrue(task.stop.is_set())
+        task.done.emit("late")
+        self.assertEqual(received, [])
+        task.cancel()  # deux fois sans erreur / twice without error
+
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 
     def test_about_diagnostics_name_the_version_and_the_environment(self):

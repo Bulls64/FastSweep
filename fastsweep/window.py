@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QSettings, QSize, QTimer, Qt
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -131,6 +132,7 @@ class LeftoverScan:
 
 
 STARTUP_UPDATE_DELAY_MS = 2500  # laisse la liste s'afficher avant de joindre GitHub / lets the list appear before reaching GitHub
+AUTO_INSTALL_RETRY_MS = 3000  # installation automatique repoussée tant qu'une fenêtre ou une tâche occupe FastSweep / auto install postponed while a window or task keeps FastSweep busy
 
 
 class MainWindow(QMainWindow):
@@ -143,6 +145,7 @@ class MainWindow(QMainWindow):
         self.check_updates = check_updates
         self.update_info: updater.UpdateInfo | None = None  # dernière version plus récente connue / latest newer version known
         self._update_task: UpdateTask | None = None
+        self._auto_downloading = False  # téléchargement automatique en cours / automatic download running
         self.settings = open_settings()
         migrate_legacy_settings(self.settings)
         self.lang = self.settings.value("language", "fr")
@@ -547,26 +550,23 @@ class MainWindow(QMainWindow):
         Opens a page: "classic" or "store" (application list), "restore" or "settings".
         """
         page = mode if mode in ("restore", "settings") else "apps"
-        self.classic_nav.setChecked(mode == "classic")
-        self.store_nav.setChecked(mode == "store")
-        self.restore_nav.setChecked(mode == "restore")
-        self.settings_nav.setChecked(mode == "settings")
-        if page != "apps" or self.active_page != "apps":
-            self.active_page = page
-            self.pages.setCurrentWidget({"apps": self.apps_page, "restore": self.restore_page,
-                                         "settings": self.settings_page}[page])
-            self.update_copy()
-            if page == "restore":
-                self.restore_page.ensure_loaded()
-            if page != "apps":
-                return
-        if self.mode == mode:
+        for button, name in ((self.classic_nav, "classic"), (self.store_nav, "store"),
+                             (self.restore_nav, "restore"), (self.settings_nav, "settings")):
+            button.setChecked(mode == name)
+        list_changed = page == "apps" and self.mode != mode
+        if page == self.active_page and not list_changed:
             return
-        self.mode = mode
-        self.selected = None
+        self.active_page = page
+        self.pages.setCurrentWidget({"apps": self.apps_page, "restore": self.restore_page,
+                                     "settings": self.settings_page}[page])
+        if list_changed:
+            self.mode = mode
+            self.selected = None
+            self.refresh_publisher_filter()
+            self.populate_table()
         self.update_copy()
-        self.refresh_publisher_filter()
-        self.populate_table()
+        if page == "restore":
+            self.restore_page.ensure_loaded()
 
     def focus_search(self) -> None:
         if self.active_page == "settings":
@@ -663,15 +663,9 @@ class MainWindow(QMainWindow):
 
         Ignores the result of the running GitHub request (the daemon network thread ends by itself).
         """
-        task, self._update_task = self._update_task, None
-        if task is None:
-            return
-        task.stop.set()
-        for signal in (task.done, task.failed, task.progress):
-            try:
-                signal.disconnect()
-            except (RuntimeError, TypeError):
-                pass
+        task, self._update_task, self._auto_downloading = self._update_task, None, False
+        if task is not None:
+            task.cancel()
 
     def load_apps(self, on_complete=None) -> None:
         if not is_windows():
@@ -779,12 +773,8 @@ class MainWindow(QMainWindow):
                 continue
             visible.append(app)
 
-        was_blocked = self.table.blockSignals(True)
-        self.table.setUpdatesEnabled(False)
-        try:
-            self.table.setSortingEnabled(False)
-            self._size_items = {}
-            self.table.setRowCount(len(visible))
+        self._size_items = {}
+        with self.table.rebuilding(len(visible)):
             unknown_publisher, unknown_version = self.t("publisher_unknown"), self.t("version_unknown")
             for row, app in enumerate(visible):
                 check_item = self.table.check_item(app, self.t("check_app").format(name=app.name))
@@ -803,15 +793,9 @@ class MainWindow(QMainWindow):
                 for col, item in enumerate(row_items):
                     self.table.setItem(row, col, item)
                 self.table.setRowHeight(row, 48)
-        finally:
-            self.table.setSortingEnabled(True)
-            self.table.setUpdatesEnabled(True)
-            self.table.blockSignals(was_blocked)
-        self.table.setVisible(bool(visible))
-        self.empty_label.setText(self.t("empty"))
-        self.empty_label.setVisible(not visible)
-        self.selected = None
-        self.table.sync_checks()  # case d'en-tête, compteur et bouton / header box, counter and button
+            self.selected = None
+            self.empty_label.setText(self.t("empty"))
+            self.empty_label.setVisible(not visible)
 
     def filter_table(self) -> None:
         self.search.timer.stop()
@@ -1177,12 +1161,24 @@ class MainWindow(QMainWindow):
         task.failed.connect(self.startup_update_failed)
         task.start(lambda progress, stop: updater.check_latest())
 
-    def startup_update_failed(self, key: str, detail: str) -> None:
+    def startup_update_failed(self, _key: str, _detail: str) -> None:
         self._update_task = None
+
+    @staticmethod
+    def modal_open() -> bool:
+        """Une fenêtre modale (confirmation, file, réglage…) est ouverte : ne rien ouvrir par-dessus.
+
+        A modal window (confirmation, queue, setting…) is open: open nothing on top of it.
+        """
+        return QApplication.activeModalWidget() is not None
 
     def startup_update_found(self, info: updater.UpdateInfo) -> None:
         self._update_task = None
         self.set_update_info(info)
+        if self.modal_open():
+            # L'utilisateur est occupé : l'entrée « Réglages » allumée suffit ; nouveautés et proposition restent dues.
+            # The user is busy: the lit "Settings" entry is enough; what's new and the offer stay due.
+            return
         if not info.newer:
             # À jour : au premier démarrage de cette version, ses nouveautés (une seule fois).
             # Up to date: on the first start of this version, what's new in it (once).
@@ -1204,19 +1200,34 @@ class MainWindow(QMainWindow):
 
     def start_auto_install(self, info: updater.UpdateInfo) -> None:
         exe = updater.current_executable()
+        if exe is None:
+            return
         target = updater.staged_path(exe)
         self.status_label.setText(self.t("update_installing").format(version=info.version))
+        self._auto_downloading = True
         task = self._update_task = UpdateTask(self)
         task.done.connect(self.auto_update_downloaded)
         task.failed.connect(self.auto_update_failed)
         task.start(lambda progress, stop: updater.download(info, target, progress, stop))
 
     def auto_update_downloaded(self, staged) -> None:
-        self._update_task = None
+        self._update_task, self._auto_downloading = None, False
+        self.install_when_idle(staged)
+
+    def install_when_idle(self, staged) -> None:
+        """Installe la version téléchargée dès que FastSweep n'a ni tâche en cours ni fenêtre ouverte.
+
+        Installs the downloaded version as soon as FastSweep has no running task and no open window.
+        Installer pendant une désinstallation ou sous une fenêtre modale fermerait FastSweep en plein travail.
+        Installing during an uninstall or under a modal window would close FastSweep in the middle of work.
+        """
+        if self._busy or self.modal_open():
+            QTimer.singleShot(AUTO_INSTALL_RETRY_MS, lambda: self.install_when_idle(staged))
+            return
         self.apply_update(staged)
 
     def auto_update_failed(self, key: str, detail: str) -> None:
-        self._update_task = None
+        self._update_task, self._auto_downloading = None, False
         self.status_label.setText(describe_error(STRINGS[self.lang], key, detail)[:180])
 
     def show_whats_new(self, info: updater.UpdateInfo | None = None) -> None:
@@ -1233,6 +1244,11 @@ class MainWindow(QMainWindow):
             self.show_updates()
 
     def show_updates(self) -> None:
+        if self._auto_downloading:
+            # Un second téléchargement écrirait dans le même fichier temporaire. / A second download would write to the same temporary file.
+            version = self.update_info.version if self.update_info else ""
+            QMessageBox.information(self, APP_NAME, self.t("update_installing").format(version=version))
+            return
         dialog = UpdateDialog(self, self.dark, self.lang, self.settings, self.update_info)
         dialog.exec()
         self.settings_page.load()  # options de mise à jour peut-être changées / update options maybe changed

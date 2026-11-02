@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .about import AboutSection
 from .theme import DEFAULT_OPACITY
-from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_WHATS_NEW
+from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_WHATS_NEW, store_update_options
 
 SETTING_OPACITY = "background_opacity"
 OPACITY_DELAY_MS = 120  # regroupe les mouvements du curseur avant de redessiner / groups slider moves before repainting
@@ -184,6 +184,9 @@ class SettingsPage(QWidget):
 
         Puts the controls back on the current values, without triggering anything.
         """
+        if self.opacity_timer.isActive():  # un réglage du curseur encore en attente n'est pas perdu / a pending slider change is not lost
+            self.opacity_timer.stop()
+            self.apply_opacity()
         settings = self.host.settings
         for widget, value in ((self.theme_combo, 1 if self.host.dark else 0),
                               (self.language_combo, max(self.language_combo.findData(self.host.lang), 0)),
@@ -276,6 +279,4 @@ class SettingsPage(QWidget):
         self.host.set_background_opacity(self.opacity_slider.value())
 
     def save_update_options(self) -> None:
-        self.host.settings.setValue(SETTING_AUTO_CHECK, self.auto_check.isChecked())
-        self.host.settings.setValue(SETTING_AUTO_INSTALL, self.auto_install.isChecked())
-        self.auto_install.setEnabled(self.auto_check.isChecked())
+        store_update_options(self.host.settings, self.auto_check, self.auto_install)

@@ -74,7 +74,7 @@ class UpdateInfo:
         """
         try:
             return datetime.fromisoformat(self.published.replace("Z", "+00:00")).astimezone().strftime("%d/%m/%Y")
-        except ValueError:
+        except (ValueError, OverflowError, OSError):  # date absente, illisible ou hors limites / missing, unreadable or out of range
             return ""
 
 
@@ -214,7 +214,7 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
         with open_url(_request(info.url, "application/octet-stream")) as response:
             if not _trusted(response.geturl()):  # redirection vers un hôte inattendu / redirect to an unexpected host
                 raise UpdateError("update_err_host", urlparse(response.geturl()).hostname or "")
-            total = info.size or int(response.headers.get("Content-Length") or 0)
+            total = info.size or _content_length(response)
             with part.open("wb") as out:
                 while True:
                     if stop is not None and stop.is_set():
@@ -235,8 +235,6 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
             if check.read(2) != b"MZ":  # un exécutable Windows commence par « MZ » / a Windows executable starts with "MZ"
                 raise UpdateError("update_err_notexe")
         os.replace(part, destination)
-    except UpdateError:
-        raise
     except PermissionError as exc:
         raise UpdateError("update_err_write", str(exc)) from exc
     except OSError as exc:  # réseau coupé en route ou disque plein / network lost midway or full disk
@@ -247,6 +245,17 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
         except OSError:
             pass
     return destination
+
+
+def _content_length(response) -> int:
+    """Taille annoncée par le serveur, 0 si absente ou invalide (la progression reste alors indéterminée).
+
+    Size announced by the server, 0 when missing or invalid (progress then stays indeterminate).
+    """
+    try:
+        return max(int(response.headers.get("Content-Length") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def current_executable() -> Path | None:

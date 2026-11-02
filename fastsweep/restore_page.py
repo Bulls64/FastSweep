@@ -334,11 +334,7 @@ class RestorePointsPage(QWidget):
     def populate_table(self) -> None:
         visible = self.visible_points()
         lock = self.lock_icon()
-        was_blocked = self.table.blockSignals(True)
-        self.table.setUpdatesEnabled(False)
-        try:
-            self.table.setSortingEnabled(False)
-            self.table.setRowCount(len(visible))
+        with self.table.rebuilding(len(visible)):
             for row, point in enumerate(visible):
                 protected = point.sequence in self._protected
                 description = point.description or self.t("rp_no_description")
@@ -364,21 +360,11 @@ class RestorePointsPage(QWidget):
                                             sequence_item, status_item)):
                     self.table.setItem(row, col, item)
                 self.table.setRowHeight(row, 44)
-        finally:
-            self.table.setSortingEnabled(True)
-            self.table.setUpdatesEnabled(True)
-            self.table.blockSignals(was_blocked)
-        self.table.setVisible(bool(visible))
-        if self.error:
-            self.empty_label.setText(self.error)
-        else:
-            self.empty_label.setText(self.t("rp_no_match") if self.points else self.t("rp_empty"))
-        self.empty_label.setVisible(not visible and self._loaded)
-        self.table.sync_checks()
-
-    def filter_table(self) -> None:
-        self.search.timer.stop()
-        self.populate_table()
+            if self.error:
+                self.empty_label.setText(self.error)
+            else:
+                self.empty_label.setText(self.t("rp_no_match") if self.points else self.t("rp_empty"))
+            self.empty_label.setVisible(not visible and self._loaded)
 
     def checked_points(self) -> list[RestorePoint]:
         """Points cochés, y compris ceux masqués par la recherche ; jamais le plus récent.

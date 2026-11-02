@@ -21,7 +21,7 @@ def load_operation_history() -> list[dict]:
     try:
         data = json.loads(operation_history_path().read_text(encoding="utf-8"))
         return [event for event in data if isinstance(event, dict)] if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # fichier absent, JSON invalide ou encodage illisible / missing file, invalid JSON or unreadable encoding
         return []
 
 

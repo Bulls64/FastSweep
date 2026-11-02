@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import warnings
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl, Signal
@@ -65,6 +66,20 @@ class UpdateTask(QObject):
 
         threading.Thread(target=run, daemon=True, name="FastSweepUpdate").start()
 
+    def cancel(self) -> None:
+        """Interrompt la tâche (téléchargement) et ignore ses résultats tardifs ; le thread démon finit seul.
+
+        Interrupts the task (download) and ignores its late results; the daemon thread ends by itself.
+        """
+        self.stop.set()
+        with warnings.catch_warnings():  # PySide avertit pour un signal sans connexion / PySide warns for a signal with no connection
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for signal in (self.done, self.failed, self.progress):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass  # rien de connecté / nothing connected
+
 
 # Espacements compacts des notes de version, en pixels (Qt met par défaut de larges marges autour de chaque bloc).
 # Compact spacing for release notes, in pixels (Qt puts wide margins around every block by default).
@@ -108,6 +123,24 @@ def show_notes(browser: QTextBrowser, info: updater.UpdateInfo, lang: str, empty
     else:
         browser.setPlainText(empty_text)
     return bool(notes)
+
+
+def store_update_options(settings, auto_check: QCheckBox, auto_install: QCheckBox) -> None:
+    """Mémorise les deux options de mise à jour ; l'installation automatique suit la vérification.
+
+    Remembers both update options; automatic install follows the check.
+    """
+    settings.setValue(SETTING_AUTO_CHECK, auto_check.isChecked())
+    settings.setValue(SETTING_AUTO_INSTALL, auto_install.isChecked())
+    auto_install.setEnabled(auto_check.isChecked())
+
+
+def open_release_page(info: updater.UpdateInfo | None) -> None:
+    """Page GitHub de la release (adresse déjà vérifiée par check_latest), sinon la liste des releases.
+
+    GitHub page of the release (address already checked by check_latest), otherwise the list of releases.
+    """
+    QDesktopServices.openUrl(QUrl(info.page if info else updater.RELEASES_URL))
 
 
 def describe_error(strings: dict, key: str, detail: str) -> str:
@@ -178,9 +211,7 @@ class UpdateDialog(FluentDialog):
             self.show_info(info)
 
     def save_options(self) -> None:
-        self.settings.setValue(SETTING_AUTO_CHECK, self.auto_check.isChecked())
-        self.settings.setValue(SETTING_AUTO_INSTALL, self.auto_install.isChecked())
-        self.auto_install.setEnabled(self.auto_check.isChecked())  # l'installation automatique suit la vérification / auto install follows the check
+        store_update_options(self.settings, self.auto_check, self.auto_install)
 
     # --- États / States ----------------------------------------------------------------------------
 
@@ -191,7 +222,7 @@ class UpdateDialog(FluentDialog):
     def action_mode(self) -> str:
         """Ce que fait le bouton principal : "install", "page" ou "" (rien à faire).
 
-        What the main button does: "install", "page" or "" (nothing to do).
+        What the main button does: "install", "page", "cancel" (download running) or "" (nothing to do).
         """
         info = self.info
         if self.downloading:
@@ -209,10 +240,9 @@ class UpdateDialog(FluentDialog):
         lines = []
         if info.newer:
             lines.append(strings["update_available"].format(version=info.version))
-            if not info.installable:
-                lines.append(strings["update_no_exe"])
-            elif updater.self_update_problem():
-                lines.append(strings[updater.self_update_problem()])
+            problem = "update_no_exe" if not info.installable else updater.self_update_problem()
+            if problem:
+                lines.append(strings[problem])
         else:
             lines.append(strings["update_uptodate"])
         self.status_label.setText("\n".join(lines))
@@ -262,12 +292,7 @@ class UpdateDialog(FluentDialog):
     def drop_task(self) -> None:
         task, self.task, self._on_done = self.task, None, None
         if task is not None:
-            task.stop.set()
-            for signal in (task.done, task.failed, task.progress):
-                try:
-                    signal.disconnect()
-                except (RuntimeError, TypeError):
-                    pass
+            task.cancel()
 
     def on_task_done(self, result) -> None:
         callback, self._on_done = self._on_done, None
@@ -280,7 +305,7 @@ class UpdateDialog(FluentDialog):
             if self.task is not None:
                 self.task.stop.set()  # l'erreur « annulé » arrive ensuite / the "cancelled" error follows
         elif mode == "page":
-            QDesktopServices.openUrl(QUrl(self.info.page if self.info else updater.RELEASES_URL))
+            open_release_page(self.info)
         elif mode == "install":
             self.download()
 
@@ -391,7 +416,7 @@ class WhatsNewDialog(FluentDialog):
         self.github_button.setEnabled(True)  # la page des releases reste accessible / the releases page stays reachable
 
     def open_page(self) -> None:
-        QDesktopServices.openUrl(QUrl(self.info.page if self.info else updater.RELEASES_URL))
+        open_release_page(self.info)
 
     def see_update(self) -> None:
         self.wants_update = True
@@ -399,10 +424,6 @@ class WhatsNewDialog(FluentDialog):
 
     def reject(self) -> None:
         if self.task is not None:
-            for signal in (self.task.done, self.task.failed):
-                try:
-                    signal.disconnect()  # résultat tardif ignoré / late result ignored
-                except (RuntimeError, TypeError):
-                    pass
+            self.task.cancel()  # résultat tardif ignoré / late result ignored
             self.task = None
         super().reject()
