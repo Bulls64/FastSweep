@@ -49,7 +49,8 @@ from .inventory import display_icon_path, format_date, format_size, read_classic
 from .models import AppEntry, FileCandidate, RegistryCandidate
 from .restore_page import RestorePointsPage
 from .system import is_admin, is_windows, relaunch_as_admin
-from .theme import colors, theme_stylesheet
+from .settings_page import SETTING_OPACITY, SettingsPage
+from .theme import DEFAULT_OPACITY, background_opacity, colors, set_background_opacity, theme_stylesheet
 from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL, SETTING_DISMISSED, UpdateDialog, UpdateTask, describe_error
 from .uninstall import (
     REBOOT_EXIT_CODES,
@@ -139,8 +140,9 @@ class MainWindow(QMainWindow):
         if self.lang not in STRINGS:
             self.lang = "fr"
         self.dark = self.settings.value("dark", True, type=bool)
+        set_background_opacity(self.settings.value(SETTING_OPACITY, DEFAULT_OPACITY, type=int))
         self.mode = "classic"  # liste d'applications affichée / application list shown
-        self.restore_active = False  # page des points de restauration ouverte / restore points page open
+        self.active_page = "apps"  # « apps », « restore » ou « settings » / "apps", "restore" or "settings"
         self.sidebar_collapsed = False
         self.selected: AppEntry | None = None
         self.classic_apps: list[AppEntry] = []
@@ -227,6 +229,9 @@ class MainWindow(QMainWindow):
         divider.setFixedHeight(1)
         side.addWidget(divider)
         side.addSpacing(6)
+        self.settings_nav = NavButton()  # une page, comme les entrées du haut / a page, like the top entries
+        self.settings_nav.clicked.connect(lambda: self.switch_mode("settings"))
+        side.addWidget(self.settings_nav)
         self.restore_backup_btn = NavButton()
         self.history_btn = NavButton()
         self.update_btn = NavButton()
@@ -287,6 +292,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.apps_page)
         self.restore_page = RestorePointsPage(self)
         self.pages.addWidget(self.restore_page)
+        self.settings_page = SettingsPage(self)
+        self.pages.addWidget(self.settings_page)
         main_layout.addWidget(self.pages, 1)
 
         search_row = QHBoxLayout()
@@ -374,6 +381,7 @@ class MainWindow(QMainWindow):
         self.store_nav.setText(self.t("store"))
         self.system_label.setText(self.t("system_section"))
         self.restore_nav.setText(self.t("restore_points"))
+        self.settings_nav.setText(self.t("settings"))
         self.about_btn.setText(self.t("about"))
         self.refresh_update_button()
         self.restore_backup_btn.setText(self.t("restore_backup"))
@@ -381,6 +389,9 @@ class MainWindow(QMainWindow):
         if self.restore_active:
             self.page_title.setText(self.t("restore_points"))
             self.page_hint.setText(self.t("restore_points_hint"))
+        elif self.active_page == "settings":
+            self.page_title.setText(self.t("settings"))
+            self.page_hint.setText(self.t("settings_hint"))
         else:
             self.page_title.setText(self.t("classic" if self.mode == "classic" else "store"))
             self.page_hint.setText(self.t("classic_hint" if self.mode == "classic" else "store_hint"))
@@ -413,6 +424,7 @@ class MainWindow(QMainWindow):
             widget.setAccessibleName(self.t(key))
         self.update_check_ui()  # compteur et libellé du bouton / counter and button label
         self.restore_page.update_copy()
+        self.settings_page.update_copy()
 
     def update_sidebar_toggle(self) -> None:
         label = self.t("show_sidebar" if self.sidebar_collapsed else "hide_sidebar")
@@ -425,7 +437,8 @@ class MainWindow(QMainWindow):
         Stroke icons in the current theme's colors.
         """
         c = colors(self.dark)
-        for button, name in ((self.classic_nav, "apps"), (self.store_nav, "store"), (self.restore_nav, "timeline")):
+        for button, name in ((self.classic_nav, "apps"), (self.store_nav, "store"), (self.restore_nav, "timeline"),
+                             (self.settings_nav, "settings")):
             button.setIcon(glyph_icon(name, c["text"], c["accent"]))  # accent quand la page est active / accent when active
             button.set_accent(QColor(c["accent"]))
         for button, name in ((self.restore_backup_btn, "undo"), (self.history_btn, "history"), (self.about_btn, "info"),
@@ -473,12 +486,30 @@ class MainWindow(QMainWindow):
         if self._translucent and not apply_backdrop(self, ACRYLIC, self.dark):
             self._translucent = False
             self.setStyleSheet(theme_stylesheet(self.dark, False))
+            self.settings_page.refresh_opacity_state()  # le curseur n'a alors plus d'effet / the slider then has no effect
         set_dark_title_bar(self, self.dark)
 
     def toggle_theme(self) -> None:
         self.dark = not self.dark
         self.settings.setValue("dark", self.dark)
         self.apply_theme()
+
+    def set_dark(self, dark: bool) -> None:
+        if dark != self.dark:
+            self.toggle_theme()
+
+    def set_language(self, lang: str) -> None:
+        if lang in STRINGS and lang != self.lang:
+            self.toggle_language()
+
+    def set_background_opacity(self, level: int) -> None:
+        """Opacité des fonds Acrylic (0 à 100 %), mémorisée et appliquée tout de suite.
+
+        Acrylic background opacity (0 to 100%), remembered and applied right away.
+        """
+        self.settings.setValue(SETTING_OPACITY, set_background_opacity(level))
+        if self._translucent:
+            self.setStyleSheet(theme_stylesheet(self.dark, True))
 
     def toggle_sidebar(self) -> None:
         self.sidebar_collapsed = not self.sidebar_collapsed
@@ -491,21 +522,37 @@ class MainWindow(QMainWindow):
         self.update_copy()
         self.populate_table()
 
-    def switch_mode(self, mode: str) -> None:
-        """Ouvre une page : « classic » ou « store » (liste d'applications) ou « restore » (points de restauration).
+    @property
+    def restore_active(self) -> bool:
+        return self.active_page == "restore"
 
-        Opens a page: "classic" or "store" (application list) or "restore" (restore points).
+    @property
+    def translucent(self) -> bool:
+        """Fonds Acrylic actifs (Windows 11 22H2 ou plus récent). / Acrylic backgrounds on (Windows 11 22H2 or later)."""
+        return self._translucent
+
+    @property
+    def background_opacity(self) -> int:
+        return background_opacity()
+
+    def switch_mode(self, mode: str) -> None:
+        """Ouvre une page : « classic » ou « store » (liste d'applications), « restore » ou « settings ».
+
+        Opens a page: "classic" or "store" (application list), "restore" or "settings".
         """
-        restore = mode == "restore"
-        self.classic_nav.setChecked(not restore and mode == "classic")
-        self.store_nav.setChecked(not restore and mode == "store")
-        self.restore_nav.setChecked(restore)
-        if restore or self.restore_active:
-            self.restore_active = restore
-            self.pages.setCurrentWidget(self.restore_page if restore else self.apps_page)
+        page = mode if mode in ("restore", "settings") else "apps"
+        self.classic_nav.setChecked(mode == "classic")
+        self.store_nav.setChecked(mode == "store")
+        self.restore_nav.setChecked(mode == "restore")
+        self.settings_nav.setChecked(mode == "settings")
+        if page != "apps" or self.active_page != "apps":
+            self.active_page = page
+            self.pages.setCurrentWidget({"apps": self.apps_page, "restore": self.restore_page,
+                                         "settings": self.settings_page}[page])
             self.update_copy()
-            if restore:
+            if page == "restore":
                 self.restore_page.ensure_loaded()
+            if page != "apps":
                 return
         if self.mode == mode:
             return
@@ -516,6 +563,8 @@ class MainWindow(QMainWindow):
         self.populate_table()
 
     def focus_search(self) -> None:
+        if self.active_page == "settings":
+            return
         search = self.restore_page.search if self.restore_active else self.search
         search.setFocus()
         search.selectAll()
@@ -524,6 +573,8 @@ class MainWindow(QMainWindow):
         """F5 : actualise la page affichée. / F5: refreshes the page on screen."""
         if self.restore_active:
             self.restore_page.load()
+        elif self.active_page == "settings":
+            return
         else:
             self.load_apps()
 
@@ -531,6 +582,8 @@ class MainWindow(QMainWindow):
         """Suppr : désinstalle les applications ou supprime les points cochés. / Del: uninstalls apps or deletes checked points."""
         if self.restore_active:
             self.restore_page.delete_checked()
+        elif self.active_page == "settings":
+            return
         else:
             self.uninstall_selection()
 
@@ -1128,6 +1181,7 @@ class MainWindow(QMainWindow):
     def show_updates(self) -> None:
         dialog = UpdateDialog(self, self.dark, self.lang, self.settings, self.update_info)
         dialog.exec()
+        self.settings_page.load()  # options de mise à jour peut-être changées / update options maybe changed
         if dialog.info is not None:
             self.set_update_info(dialog.info)
         if dialog.staged is not None:

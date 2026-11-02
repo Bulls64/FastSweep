@@ -56,7 +56,8 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 
 **Interface**
 - WinUI 3 style, light and dark themes, English and French.
-- Acrylic translucency on Windows 11 22H2 and later. Older versions keep the same colors on opaque backgrounds.
+- Acrylic translucency on Windows 11 22H2 and later, with a **background opacity** slider in Settings (0% shows the most of what is behind, 100% makes backgrounds solid; text stays sharp). Older versions keep the same colors on opaque backgrounds.
+- A **Settings** page groups theme, language, background opacity and update options.
 - **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from the sidebar. It shows what's new, downloads `FastSweep.exe`, verifies it (size, SHA-256 checksum, file type, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
 - Local history of every operation, which can be exported to JSON.
 - Uninstall options (restore point, silent mode, automatic scan) are remembered between sessions.
@@ -72,6 +73,8 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 | Uninstall queue in silent mode | Registry leftovers, sorted by confidence |
 | <img src="docs/screenshots/update-dark-en.png" alt="Update window" width="420"> | <img src="docs/screenshots/update-progress-dark-en.png" alt="Update download" width="420"> |
 | Update available, with release notes | Verified download before installing |
+| <img src="docs/screenshots/settings-dark-en.png" alt="Settings page" width="420"> | <img src="docs/screenshots/about-dark-en.png" alt="About window" width="420"> |
+| Settings, with the background opacity slider | About window |
 
 ### Requirements
 
@@ -132,6 +135,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/restore_points.py` | Listing and deleting restore points, protection of the newest |
 | `fastsweep/updater.py`, `update_ui.py` | Update from GitHub releases: lookup, verified download, executable swap; update window |
 | `fastsweep/about.py` | About window |
+| `fastsweep/settings_page.py` | Settings page |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | WinUI components, themes, icons, Acrylic |
 | `fastsweep/i18n.py` | English and French texts |
@@ -180,7 +184,8 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 
 **Interface**
 - Style WinUI 3, thèmes clair et sombre, français et anglais.
-- Transparence Acrylic sous Windows 11 22H2 et plus récent. Les versions plus anciennes gardent les mêmes couleurs sur des fonds opaques.
+- Transparence Acrylic sous Windows 11 22H2 et plus récent, avec un curseur **d'opacité des fonds** dans les Réglages (0 % laisse le plus voir l'arrière-plan, 100 % rend les fonds pleins ; le texte reste net). Les versions plus anciennes gardent les mêmes couleurs sur des fonds opaques.
+- Une page **Réglages** regroupe le thème, la langue, l'opacité des fonds et les options de mise à jour.
 - **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis le volet. Il affiche les nouveautés, télécharge `FastSweep.exe`, le vérifie (taille, somme SHA-256, type de fichier, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
 - Historique local de toutes les opérations, exportable en JSON.
 - Les options de désinstallation (point de restauration, mode silencieux, analyse automatique) sont mémorisées d'une session à l'autre.
@@ -196,6 +201,8 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 | File de désinstallation en mode silencieux | Résidus de registre classés par confiance |
 | <img src="docs/screenshots/update-dark-fr.png" alt="Fenêtre de mise à jour" width="420"> | <img src="docs/screenshots/update-progress-dark-fr.png" alt="Téléchargement de la mise à jour" width="420"> |
 | Mise à jour disponible, avec les nouveautés | Téléchargement vérifié avant installation |
+| <img src="docs/screenshots/settings-dark-fr.png" alt="Page Réglages" width="420"> | <img src="docs/screenshots/about-dark-fr.png" alt="Fenêtre À propos" width="420"> |
+| Réglages, avec le curseur d'opacité des fonds | Fenêtre « À propos » |
 
 ### Configuration requise
 
@@ -256,6 +263,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/restore_points.py` | Lecture et suppression des points de restauration, protection du plus récent |
 | `fastsweep/updater.py`, `update_ui.py` | Mise à jour depuis les releases GitHub : recherche, téléchargement vérifié, remplacement de l'exécutable ; fenêtre de mise à jour |
 | `fastsweep/about.py` | Fenêtre « À propos » |
+| `fastsweep/settings_page.py` | Page Réglages |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | Composants WinUI, thèmes, icônes, Acrylic |
 | `fastsweep/i18n.py` | Textes français et anglais |

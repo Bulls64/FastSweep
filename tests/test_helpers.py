@@ -541,8 +541,10 @@ class HelperTests(unittest.TestCase):
             for translucent in (False, True):
                 sheet = theme.theme_stylesheet(dark, translucent)
                 self.assertIn(theme.colors(dark)["accent"], sheet)
-                self.assertIn("QMainWindow#mainWindow { background: transparent; }" if translucent else
-                              f"QMainWindow#mainWindow {{ background: {theme.colors(dark)['mica']}; }}", sheet)
+                window = theme.colors(dark, translucent)["window"]
+                self.assertIn(f"QMainWindow#mainWindow {{ background: {window}; }}", sheet)
+                # Opacité par défaut : fenêtre invisible en Acrylic, pleine sinon. / Default opacity: invisible window in Acrylic, solid otherwise.
+                self.assertEqual(theme.qcolor(window).alpha(), 0 if translucent else 255)
 
     def test_translucent_fills_let_the_backdrop_show_through(self):
         # Calques nettement transparents en mode Acrylic, pleins en mode opaque.
@@ -1858,6 +1860,118 @@ class HelperTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("PackageTypeFilter", result.stderr)
         self.assertIn("Package is no longer installed", result.stderr, result.stderr)
+
+    # --- Page Réglages et opacité des fonds / Settings page and background opacity ----------------------
+
+    def test_default_opacity_keeps_the_current_translucent_look(self):
+        for dark in (False, True):
+            current = theme.colors(dark, True, theme.DEFAULT_OPACITY)
+            for token, value in theme._TRANSLUCENT[dark].items():
+                self.assertAlmostEqual(theme.qcolor(current[token]).alphaF(), theme.qcolor(value).alphaF(), places=2)
+            self.assertEqual(theme.qcolor(current["window"]).alpha(), 0)
+
+    def test_opacity_goes_from_more_see_through_to_solid(self):
+        for dark in (False, True):
+            solid = theme.colors(dark)
+            alphas = []
+            for level in (0, 25, 50, 75, 100):
+                alphas.append(theme.qcolor(theme.colors(dark, True, level)["card"]).alphaF())
+            self.assertEqual(alphas, sorted(alphas))  # croissante / increasing
+            self.assertLess(alphas[0], alphas[2])
+            full = theme.colors(dark, True, 100)
+            for token in ("layer", "card", "ctl", "footer", "window"):
+                color, expected = theme.qcolor(full[token]), theme.qcolor(solid["mica" if token == "window" else token])
+                self.assertEqual((color.alpha(), color.rgb()), (255, expected.rgb()))  # 100 % = couleurs pleines / solid colors
+        self.assertEqual(theme.colors(True)["card"], "#2B2B2B")  # mode opaque inchangé / opaque mode unchanged
+
+    def test_background_opacity_is_clamped_and_used_by_the_stylesheet(self):
+        self.addCleanup(theme.set_background_opacity, theme.DEFAULT_OPACITY)
+        self.assertEqual(theme.set_background_opacity(150), 100)
+        self.assertEqual(theme.set_background_opacity(-3), 0)
+        theme.set_background_opacity(80)
+        self.assertIn(theme.colors(True, True, 80)["card"], theme.theme_stylesheet(True, True))
+        self.assertEqual(theme.theme_stylesheet(True, False), theme._theme_stylesheet(True, False, theme.DEFAULT_OPACITY))
+
+    def settings_window(self, translucent=False):
+        self.addCleanup(theme.set_background_opacity, theme.DEFAULT_OPACITY)
+        window = self.checkbox_window()
+        window._translucent = translucent
+        window.settings_page.load()
+        window.switch_mode("settings")
+        return window, window.settings_page
+
+    def test_settings_page_opens_from_the_sidebar(self):
+        window, page = self.settings_window()
+        self.assertIs(window.pages.currentWidget(), page)
+        self.assertTrue(window.settings_nav.isChecked())
+        self.assertFalse(window.classic_nav.isChecked())
+        self.assertEqual(window.page_title.text(), window.t("settings"))
+        with patch.object(window, "load_apps") as load, patch.object(window, "uninstall_selection") as uninstall_mock:
+            window.refresh_current()  # F5 et Suppr ne font rien ici / F5 and Del do nothing here
+            window.delete_current()
+        load.assert_not_called()
+        uninstall_mock.assert_not_called()
+        window.switch_mode("classic")
+        self.assertIs(window.pages.currentWidget(), window.apps_page)
+        self.assertFalse(window.settings_nav.isChecked())
+        window.close()
+
+    def test_settings_page_changes_theme_and_language_and_stays_in_sync(self):
+        window, page = self.settings_window()
+        page.theme_combo.setCurrentIndex(0 if window.dark else 1)
+        dark = window.dark
+        self.assertEqual(page.theme_combo.currentIndex(), 1 if dark else 0)
+        window.toggle_theme()  # bouton du haut / top button
+        self.assertEqual(page.theme_combo.currentIndex(), 1 if window.dark else 0)
+        page.language_combo.setCurrentIndex(page.language_combo.findData("en"))
+        self.assertEqual(window.lang, "en")
+        self.assertEqual(window.page_title.text(), "Settings")
+        window.toggle_language()
+        self.assertEqual(page.language_combo.currentData(), "fr")
+        self.assertEqual(page.theme_combo.itemText(0), i18n.STRINGS["fr"]["settings_theme_light"])
+        window.close()
+
+    def test_opacity_slider_is_disabled_without_acrylic(self):
+        window, page = self.settings_window(translucent=False)
+        self.assertFalse(page.opacity_slider.isEnabled())
+        self.assertEqual(page.opacity_row[1].text(), window.t("settings_opacity_unavailable"))
+        window.close()
+
+    def test_opacity_slider_restyles_remembers_and_resets(self):
+        window, page = self.settings_window(translucent=True)
+        self.assertTrue(page.opacity_slider.isEnabled())
+        self.assertEqual(page.opacity_slider.value(), theme.DEFAULT_OPACITY)
+        self.assertFalse(page.opacity_reset.isEnabled())
+        page.opacity_slider.setValue(20)
+        self.assertEqual(page.opacity_value.text(), "20 %")
+        self.assertTrue(self.wait_until(lambda: theme.background_opacity() == 20))  # après la courte pause / after the short pause
+        self.assertIn(theme.colors(window.dark, True, 20)["card"], window.styleSheet())
+        self.assertEqual(window.settings.value("background_opacity", type=int), 20)
+        self.assertTrue(page.opacity_reset.isEnabled())
+        page.opacity_reset.click()
+        self.assertTrue(self.wait_until(lambda: theme.background_opacity() == theme.DEFAULT_OPACITY))
+        window.close()
+
+    def test_saved_opacity_is_applied_at_startup(self):
+        self.addCleanup(theme.set_background_opacity, theme.DEFAULT_OPACITY)
+        main_window.open_settings().setValue("background_opacity", 85)
+        window = self.checkbox_window()
+        self.assertEqual(theme.background_opacity(), 85)
+        self.assertEqual(window.settings_page.opacity_slider.value(), 85)
+        window.close()
+
+    def test_settings_update_options_match_the_update_window(self):
+        window, page = self.settings_window()
+        page.auto_check.setChecked(False)
+        self.assertFalse(page.auto_install.isEnabled())
+        self.assertFalse(window.settings.value("update_auto_check", True, type=bool))
+        with patch.object(main_window.UpdateDialog, "exec", return_value=0), \
+                patch.object(updater, "check_latest", return_value=self.info(newer=False)):
+            page.check_now.click()  # ouvre la fenêtre des mises à jour / opens the update window
+            window.settings.setValue("update_auto_check", True)  # comme si la fenêtre l'avait changé / as if the window changed it
+        window.settings_page.load()
+        self.assertTrue(page.auto_check.isChecked())
+        window.close()
 
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 

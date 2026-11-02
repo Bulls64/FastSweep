@@ -55,14 +55,66 @@ _TRANSLUCENT = {
 }
 
 
-def colors(dark: bool, translucent: bool = False) -> dict[str, str]:
-    """Jeton de couleur → valeur CSS (hex ou rgba).
+# Opacité des fonds translucides réglée par l'utilisateur (page Réglages), en pour cent.
+# À DEFAULT_OPACITY, les valeurs de _TRANSLUCENT telles quelles ; à 0, leur opacité est réduite à MIN_ALPHA_SCALE ;
+# à 100, les fonds deviennent les couleurs pleines du thème (plus rien ne transparaît).
+# Translucent background opacity set by the user (Settings page), in percent.
+# At DEFAULT_OPACITY, the _TRANSLUCENT values as they are; at 0, their opacity drops to MIN_ALPHA_SCALE;
+# at 100, fills become the theme's solid colors (nothing shows through any more).
+DEFAULT_OPACITY = 50
+MIN_ALPHA_SCALE = 0.25
+_opacity = DEFAULT_OPACITY
 
-    Color token → CSS value (hex or rgba).
+
+def set_background_opacity(level: int) -> int:
+    """Fixe l'opacité des fonds (bornée entre 0 et 100) pour les feuilles de style à venir ; renvoie la valeur retenue.
+
+    Sets the background opacity (clamped to 0–100) for the style sheets to come; returns the value kept.
+    """
+    global _opacity
+    _opacity = max(0, min(100, int(level)))
+    return _opacity
+
+
+def background_opacity() -> int:
+    return _opacity
+
+
+def _rgba(value: str) -> tuple[float, float, float, float]:
+    color = qcolor(value)
+    return color.red(), color.green(), color.blue(), color.alphaF()
+
+
+def blend(translucent: str, solid: str, level: int) -> str:
+    """Couleur translucide ajustée à l'opacité ``level`` (voir DEFAULT_OPACITY).
+
+    Translucent color adjusted to opacity ``level`` (see DEFAULT_OPACITY).
+    """
+    red, green, blue, alpha = _rgba(translucent)
+    if level <= DEFAULT_OPACITY:
+        alpha *= MIN_ALPHA_SCALE + (1 - MIN_ALPHA_SCALE) * level / DEFAULT_OPACITY
+    else:
+        mix = (level - DEFAULT_OPACITY) / (100 - DEFAULT_OPACITY)
+        target = _rgba(solid)
+        red, green, blue = (round(value + (goal - value) * mix) for value, goal in zip((red, green, blue), target[:3]))
+        alpha += (1 - alpha) * mix
+    return f"rgba({int(red)},{int(green)},{int(blue)},{alpha:.3f})"
+
+
+def colors(dark: bool, translucent: bool = False, opacity: int | None = None) -> dict[str, str]:
+    """Jeton de couleur → valeur CSS (hex ou rgba) ; ``opacity`` par défaut : celle réglée par l'utilisateur.
+
+    Color token → CSS value (hex or rgba); ``opacity`` defaults to the one set by the user.
     """
     values = dict(_BASE[dark])
+    values["window"] = values["mica"]
     if translucent:
-        values.update(_TRANSLUCENT[dark])
+        level = _opacity if opacity is None else opacity
+        base = _BASE[dark]
+        red, green, blue, _alpha = _rgba(base["mica"])
+        overrides = dict(_TRANSLUCENT[dark], window=f"rgba({red},{green},{blue},0)")  # fond de fenêtre invisible par défaut / window fill invisible by default
+        for key, value in overrides.items():
+            values[key] = blend(value, base["mica" if key == "window" else key], level)
     return values
 
 
@@ -78,10 +130,18 @@ def qcolor(value: str) -> QColor:
     return QColor(value)
 
 
-@lru_cache(maxsize=4)
 def theme_stylesheet(dark: bool, translucent: bool = False) -> str:
-    c = colors(dark, translucent)
-    window_bg = "transparent" if translucent else c["mica"]
+    """Feuille de style du thème, à l'opacité des fonds réglée par l'utilisateur.
+
+    Theme style sheet, at the background opacity set by the user.
+    """
+    return _theme_stylesheet(dark, translucent, _opacity if translucent else DEFAULT_OPACITY)
+
+
+@lru_cache(maxsize=8)
+def _theme_stylesheet(dark: bool, translucent: bool, opacity: int) -> str:
+    c = colors(dark, translucent, opacity)
+    window_bg = c["window"]
     check = glyph_png("check", c["onAccent"], 12, 2.2)
     chevron = glyph_png("chev-down", c["text2"], 12, 1.8)
     chevron_up = glyph_png("chev-up", c["text2"], 12, 1.8)
@@ -151,6 +211,14 @@ def theme_stylesheet(dark: bool, translucent: bool = False) -> str:
         QRadioButton::indicator:hover {{ background: {c["ctlHover"]}; }}
         QRadioButton::indicator:checked {{ width: 10px; height: 10px; border: 5px solid {c["accent"]};
                                            background: {c["onAccent"]}; }}
+        QSlider {{ min-height: 24px; }}
+        QSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {c["track"]}; }}
+        QSlider::sub-page:horizontal {{ height: 4px; border-radius: 2px; background: {c["accent"]}; }}
+        QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -7px 0; border-radius: 9px;
+                                      background: {c["accent"]}; border: 3px solid {c["popup"]}; }}
+        QSlider::handle:horizontal:hover {{ border-width: 2px; }}
+        QSlider::groove:horizontal:disabled, QSlider::sub-page:horizontal:disabled {{ background: {c["accentDisabled"]}; }}
+        QSlider::handle:horizontal:disabled {{ background: {c["accentDisabled"]}; }}
         QSpinBox {{ background: {c["ctl"]}; border: 1px solid {c["ctlStroke"]}; border-bottom: 1px solid {c["ctlBottom"]};
                     border-radius: 4px; padding: 4px 4px 4px 10px; min-width: 56px; }}
         QSpinBox:hover {{ background: {c["ctlHover"]}; }}
