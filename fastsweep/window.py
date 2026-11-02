@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__, updater
+from .about import AboutDialog
 from .backdrop import ACRYLIC, apply_backdrop, prepare_translucency, set_dark_title_bar
 from .cleanup import (
     backup_registry_keys,
@@ -1161,4 +1162,4 @@ class MainWindow(QMainWindow):
         self.close()
 
     def show_about(self) -> None:
-        QMessageBox.about(self, self.t("about"), self.t("about_text"))
+        AboutDialog(self, self.dark, self.lang).exec()

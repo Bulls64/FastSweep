@@ -60,6 +60,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 - **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from the sidebar. It shows what's new, downloads `FastSweep.exe`, verifies it (size, SHA-256 checksum, file type, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
 - Local history of every operation, which can be exported to JSON.
 - Uninstall options (restore point, silent mode, automatic scan) are remembered between sessions.
+- An About window with the version, license, repository link, a shortcut to report a problem, and a **Copy details** button that puts the version and environment (Windows, Python, Qt) on the clipboard, ready to paste into an issue.
 
 ### Screenshots
 
@@ -130,6 +131,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/cleanup.py` | Registry and file leftovers, backups, Recycle Bin |
 | `fastsweep/restore_points.py` | Listing and deleting restore points, protection of the newest |
 | `fastsweep/updater.py`, `update_ui.py` | Update from GitHub releases: lookup, verified download, executable swap; update window |
+| `fastsweep/about.py` | About window |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | WinUI components, themes, icons, Acrylic |
 | `fastsweep/i18n.py` | English and French texts |
@@ -182,6 +184,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 - **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis le volet. Il affiche les nouveautés, télécharge `FastSweep.exe`, le vérifie (taille, somme SHA-256, type de fichier, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
 - Historique local de toutes les opérations, exportable en JSON.
 - Les options de désinstallation (point de restauration, mode silencieux, analyse automatique) sont mémorisées d'une session à l'autre.
+- Une fenêtre « À propos » avec la version, la licence, le lien vers le dépôt, un raccourci pour signaler un problème et un bouton **Copier les informations** qui place la version et l'environnement (Windows, Python, Qt) dans le presse-papiers, prêts à coller dans un ticket.
 
 ### Captures d'écran
 
@@ -252,6 +255,7 @@ py -m unittest discover -s tests -v
 | `fastsweep/cleanup.py` | Résidus du registre et des fichiers, sauvegardes, Corbeille |
 | `fastsweep/restore_points.py` | Lecture et suppression des points de restauration, protection du plus récent |
 | `fastsweep/updater.py`, `update_ui.py` | Mise à jour depuis les releases GitHub : recherche, téléchargement vérifié, remplacement de l'exécutable ; fenêtre de mise à jour |
+| `fastsweep/about.py` | Fenêtre « À propos » |
 | `fastsweep/window.py`, `restore_page.py`, `dialogs.py` | Interface |
 | `fastsweep/widgets.py`, `theme.py`, `glyphs.py`, `backdrop.py` | Composants WinUI, thèmes, icônes, Acrylic |
 | `fastsweep/i18n.py` | Textes français et anglais |

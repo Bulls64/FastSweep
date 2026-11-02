@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 from fastsweep import backdrop, cleanup, dialogs, glyphs, history, i18n, icons, inventory, models, system, theme, uninstall, widgets, workers
-from fastsweep import restore_page, restore_points, update_ui, updater
+from fastsweep import about, restore_page, restore_points, update_ui, updater
 from fastsweep import window as main_window
 
 
@@ -805,7 +805,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(i18n.APP_NAME, "FastSweep")
         for lang in ("fr", "en"):
             self.assertEqual(i18n.STRINGS[lang]["title"], "FastSweep")
-            self.assertNotIn("Clair", i18n.STRINGS[lang]["about_text"])
+            self.assertNotIn("Clair", i18n.STRINGS[lang]["about_description"])
 
     # --- Scripts de build : format attendu par Windows -------------------------------------------------
     # --- Build scripts: format expected by Windows ------------------------------------------------------
@@ -1780,6 +1780,48 @@ class HelperTests(unittest.TestCase):
         for lang in ("fr", "en"):
             self.assertIn("history_update", i18n.STRINGS[lang])
         self.assertEqual(dialogs.HistoryDialog.OPERATION_KEYS["update"], "history_update")
+
+
+    # --- Fenêtre « À propos » / About window ------------------------------------------------------------
+
+    def test_about_diagnostics_name_the_version_and_the_environment(self):
+        text = about.diagnostics_text()
+        self.assertIn(f"FastSweep {about.__version__}", text)
+        for label in ("Windows:", "Python:", "Qt:", "Administrator:"):
+            self.assertIn(label, text)
+        self.assertEqual(about.REPO_URL, "https://github.com/Bulls64/FastSweep")
+        self.assertEqual(about.ISSUES_URL, about.REPO_URL + "/issues/new")
+        self.assertEqual(about.environment()["mode"], "source")  # les tests tournent avec python / tests run with python
+
+    def test_about_dialog_shows_version_license_and_repository_in_both_languages(self):
+        for lang in ("fr", "en"):
+            dialog = about.AboutDialog(None, False, lang)
+            texts = " | ".join(label.text() for label in dialog.findChildren(about.QLabel))
+            for expected in (about.__version__, "MIT", about.REPO_URL, about.AUTHOR):
+                self.assertIn(expected, texts)
+            self.assertIn(i18n.STRINGS[lang]["about_tagline"], texts)
+            self.assertNotIn("Clair", texts)
+            dialog.close()
+
+    def test_about_buttons_open_the_repository_and_copy_the_details(self):
+        dialog = about.AboutDialog(None, False, "en")
+        with patch.object(about.QDesktopServices, "openUrl") as open_url:
+            dialog.repo_button.click()
+            dialog.issue_button.click()
+        self.assertEqual([call.args[0].toString() for call in open_url.call_args_list], [about.REPO_URL, about.ISSUES_URL])
+        dialog.copy_button.click()
+        self.assertEqual(about.QGuiApplication.clipboard().text(), about.diagnostics_text())
+        self.assertEqual(dialog.copy_button.text(), i18n.STRINGS["en"]["about_copied"])
+        dialog.restore_copy_label()
+        self.assertEqual(dialog.copy_button.text(), i18n.STRINGS["en"]["about_copy"])
+        dialog.close()
+
+    def test_sidebar_about_entry_opens_the_about_window(self):
+        window = self.checkbox_window()
+        with patch.object(main_window.AboutDialog, "exec", return_value=0) as run:
+            window.about_btn.click()
+        run.assert_called_once()
+        window.close()
 
 
 class FakeRegistry:
