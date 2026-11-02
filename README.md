@@ -14,7 +14,7 @@
   <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0067C0">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB">
   <img alt="PySide6" src="https://img.shields.io/badge/Qt-PySide6-41CD52">
-  <img alt="Version 1.0.3" src="https://img.shields.io/badge/version-1.0.3-8B7CFF">
+  <img alt="Version 1.0.4" src="https://img.shields.io/badge/version-1.0.4-8B7CFF">
 </p>
 
 ---
