@@ -11,7 +11,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from .system import run_powershell
+from .system import run_powershell, system_dll
 
 # Un tableau JSON même pour un seul point (run_powershell force déjà une sortie UTF-8).
 # A JSON array even for a single point (run_powershell already forces UTF-8 output).
@@ -171,7 +171,7 @@ def remove_restore_point(sequence: int) -> None:
 
     Delete a point by its number with Windows' SRRemoveRestorePoint API.
     """
-    srclient = ctypes.WinDLL("srclient.dll")
+    srclient = system_dll("srclient.dll")
     remove = srclient.SRRemoveRestorePoint
     remove.argtypes = (ctypes.c_uint32,)
     remove.restype = ctypes.c_uint32

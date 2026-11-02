@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .models import AppEntry
-from .system import run_powershell
+from .system import run_powershell, system_dll
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -200,7 +200,7 @@ def load_indirect_string(source: str) -> str:
     Windows SHLoadIndirectString; "" when the resource cannot be loaded.
     """
     try:
-        shlwapi = ctypes.WinDLL("shlwapi")
+        shlwapi = system_dll("shlwapi")
         load = shlwapi.SHLoadIndirectString
         load.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.UINT, ctypes.c_void_p)
         load.restype = ctypes.c_long

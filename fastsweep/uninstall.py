@@ -16,7 +16,7 @@ import psutil
 
 from .i18n import STRINGS
 from .models import AppEntry
-from .system import run_powershell
+from .system import run_powershell, system_dll, trusted_executable
 
 # Codes d'erreur Windows
 # Windows error codes
@@ -102,7 +102,7 @@ def restore_point_outcome(returncode: int, stdout: str, stderr: str) -> tuple[bo
 
 def windows_argv(command_line: str) -> list[str]:
     argc = ctypes.c_int()
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32 = system_dll("shell32", use_last_error=True)
     parse = shell32.CommandLineToArgvW
     parse.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
     parse.restype = ctypes.POINTER(wintypes.LPWSTR)
@@ -112,7 +112,7 @@ def windows_argv(command_line: str) -> list[str]:
     try:
         return [pointer[index] for index in range(argc.value)]
     finally:
-        local_free = ctypes.WinDLL("kernel32", use_last_error=True).LocalFree
+        local_free = system_dll("kernel32", use_last_error=True).LocalFree
         local_free.argtypes = (wintypes.HLOCAL,)
         local_free.restype = wintypes.HLOCAL
         local_free(pointer)
@@ -160,6 +160,9 @@ def launch_uninstaller(command: str):
         if not parts:
             raise ValueError("The uninstall command is empty.")
         executable, tail = parts[0], subprocess.list2cmdline(parts[1:])
+    # « MsiExec.exe /X{…} » : nommé sans dossier, Windows le chercherait d'abord à côté de FastSweep.exe.
+    # "MsiExec.exe /X{…}": named without a folder, Windows would look next to FastSweep.exe first.
+    executable = trusted_executable(executable)
     if ntpath.basename(executable).casefold() in {"msiexec", "msiexec.exe"}:  # toujours un chemin Windows / always a Windows path
         tail = re.sub(r"(?i)^/i\b", "/x", tail, count=1)  # /I réparerait ou réinstallerait au lieu de désinstaller / /I would repair or reinstall instead
     args = windows_argv("FastSweepArgs " + tail)[1:] if tail else []
@@ -204,7 +207,7 @@ class ElevatedProcess:
     """
 
     def __init__(self, handle: int):
-        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = system_dll("kernel32", use_last_error=True)
         self._kernel32.GetProcessId.argtypes = (wintypes.HANDLE,)
         self._kernel32.GetProcessId.restype = wintypes.DWORD
         self._kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
@@ -236,8 +239,8 @@ def shell_execute_elevated(executable: str, parameters: str) -> ElevatedProcess:
 
     Run an executable with the "runas" verb (UAC prompt) and keep a handle to wait for it.
     """
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    ole32 = ctypes.WinDLL("ole32")
+    shell32 = system_dll("shell32", use_last_error=True)
+    ole32 = system_dll("ole32")
     ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, wintypes.DWORD)
     ole32.CoInitializeEx.restype = ctypes.c_long
     execute = shell32.ShellExecuteExW

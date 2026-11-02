@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from . import __version__, updater
 from .backdrop import ACRYLIC, apply_backdrop, prepare_translucency, set_dark_title_bar
 from .cleanup import (
+    NOT_RECYCLABLE_ERROR,
     backup_registry_keys,
     delete_registry_tree,
     file_candidates_for,
@@ -841,7 +842,7 @@ class MainWindow(QMainWindow):
         prompt = self.t("queue_confirm").format(count=len(apps)) + "\n\n" + "\n".join(f"• {app.name}" for app in apps[:12])
         if len(apps) > 12:
             prompt += f"\n… (+{len(apps) - 12})"
-        if QMessageBox.question(self, self.t("confirm_title"), prompt) != QMessageBox.StandardButton.Yes:
+        if not self.confirm_uninstall(apps, prompt):
             return
         dialog = UninstallQueueDialog(self, apps, self.restore_check.isChecked(), self.dark, self.lang,
                                       self.silent_check.isChecked())
@@ -884,7 +885,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, self.t("no_uninstaller"))
             return
         prompt = self.t("store_confirm" if app.source == "store" else "confirm").format(name=app.name)
-        if QMessageBox.question(self, self.t("confirm_title"), prompt) != QMessageBox.StandardButton.Yes:
+        if not self.confirm_uninstall([app], prompt):
             return
         make_restore, silent = self.restore_check.isChecked(), self.silent_check.isChecked()
         self.status_label.setText(self.t("uninstall_started"))
@@ -1043,7 +1044,8 @@ class MainWindow(QMainWindow):
                     recycle_path(candidate.path)
                     moved.append(candidate.path)
                 except OSError as exc:
-                    errors.append(f"{candidate.path}: {exc}")
+                    reason = self.t("file_not_recyclable") if str(exc) == NOT_RECYCLABLE_ERROR else exc
+                    errors.append(f"{candidate.path}: {reason}")
             return moved, errors
         self.run_background(recycle_selected, lambda result: self.file_cleanup_finished(scan, result))
 
@@ -1054,6 +1056,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, self.t("file_scan_title"), self.t("file_error").format(error="\n".join(errors)))
         else:
             QMessageBox.information(self, self.t("file_scan_title"), self.t("file_done"))
+
+    def user_entry_warning(self, apps: list[AppEntry]) -> str:
+        """Avertissement quand FastSweep, en administrateur, va lancer des désinstalleurs déclarés dans HKCU.
+
+        Warning when FastSweep, as administrator, is about to run uninstallers declared in HKCU.
+        HKCU s'écrit sans droits : un programme malveillant y déclarerait une fausse « désinstallation » pour
+        obtenir les droits administrateur. La commande exacte est montrée pour être reconnue.
+        HKCU is writable without rights: a malicious program could declare a fake "uninstall" there to gain
+        administrator rights. The exact command is shown so it can be recognized.
+        """
+        user_apps = [app for app in apps if app.source == "classic" and app.hive_label == "HKCU"]
+        if not user_apps or not is_admin():
+            return ""
+        silent = self.silent_check.isChecked()
+        commands = [f"• {app.name} : {(silent and silent_uninstall_command(app)) or app.uninstall or '—'}"
+                    for app in user_apps[:12]]
+        if len(user_apps) > 12:
+            commands.append(f"… (+{len(user_apps) - 12})")
+        return self.t("user_entry_warning") + "\n" + "\n".join(commands)
+
+    def confirm_uninstall(self, apps: list[AppEntry], prompt: str) -> bool:
+        """Question de confirmation ; avec un désinstalleur HKCU en administrateur, avertissement et « Annuler » par défaut.
+
+        Confirmation question; with an HKCU uninstaller as administrator, a warning and "Cancel" by default.
+        """
+        warning = self.user_entry_warning(apps)
+        if warning:
+            return self.confirm_risky(self.t("confirm_title"), f"{warning}\n\n{prompt}")
+        return QMessageBox.question(self, self.t("confirm_title"), prompt) == QMessageBox.StandardButton.Yes
 
     def confirm_risky(self, title: str, text: str) -> bool:
         """Avertissement Oui / Annuler, Annuler étant le bouton par défaut.

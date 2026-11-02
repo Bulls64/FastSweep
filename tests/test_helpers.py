@@ -488,8 +488,10 @@ class HelperTests(unittest.TestCase):
     def test_msiexec_install_switch_becomes_uninstall_in_every_form(self):
         # Les options de msiexec ne sont pas sensibles à la casse ; /x est ce qu'il reçoit.
         # msiexec switches are case-insensitive; /x is what it receives.
-        self.assertEqual(self.launched_args("MsiExec.exe /I{ABC}"), ["MsiExec.exe", "/x{ABC}"])
-        self.assertEqual(self.launched_args("MsiExec /I{ABC}"), ["MsiExec", "/x{ABC}"])
+        # Nommé sans dossier : le vrai msiexec de System32, jamais un homonyme. / Named without a folder: System32's.
+        msiexec = system.system_tool("MsiExec.exe")
+        self.assertEqual(self.launched_args("MsiExec.exe /I{ABC}"), [msiexec, "/x{ABC}"])
+        self.assertEqual(self.launched_args("MsiExec /I{ABC}"), [msiexec, "/x{ABC}"])
         self.assertEqual(
             self.launched_args('"C:\\Windows\\System32\\msiexec.exe" /i {ABC} /qb'),
             ["C:\\Windows\\System32\\msiexec.exe", "/x", "{ABC}", "/qb"],
@@ -2221,6 +2223,97 @@ class HelperTests(unittest.TestCase):
         task.done.emit("late")
         self.assertEqual(received, [])
         task.cancel()  # deux fois sans erreur / twice without error
+
+    # --- Audit de sécurité : six correctifs / Security audit: six fixes -----------------------------------
+
+    def test_windows_tools_are_called_by_their_full_path(self):
+        with patch.object(system, "run_hidden", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            system.run_powershell("Get-Thing", timeout=5)
+        self.assertEqual(run.call_args.args[0][0], system.system_tool("WindowsPowerShell", "v1.0", "powershell.exe"))
+        candidate = models.RegistryCandidate(0, r"SOFTWARE\Acme", "HKCU", "high", "key-name")
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(cleanup, "registry_backup_root", return_value=Path(temporary)), \
+                patch.object(cleanup, "run_hidden", return_value=subprocess.CompletedProcess([], 1, "", "no")) as run:
+            with self.assertRaises(OSError):
+                cleanup.backup_registry_keys([candidate])
+        self.assertEqual(run.call_args.args[0][0], system.system_tool("reg.exe"))
+        self.assertTrue(system.system_tool("reg.exe").lower().endswith("system32\\reg.exe"))
+
+    def test_bare_program_names_never_resolve_to_fastsweeps_folder(self):
+        with tempfile.TemporaryDirectory() as own, tempfile.TemporaryDirectory() as other:
+            for folder in (own, other):
+                Path(folder, "tool.exe").write_bytes(b"MZ")
+            with patch.object(system.sys, "executable", os.path.join(own, "FastSweep.exe")), \
+                    patch.object(system, "system_directory", return_value=os.path.join(own, "missing", "System32")), \
+                    patch.dict(os.environ, {"PATH": os.pathsep.join((own, ".", other))}):
+                self.assertEqual(system.trusted_executable("tool"), os.path.join(other, "tool.exe"))
+                self.assertEqual(system.trusted_executable("absent.exe"), system.system_tool("absent.exe"))
+            self.assertEqual(system.trusted_executable(r"C:\Tools\setup.exe"), r"C:\Tools\setup.exe")
+
+    def test_windows_dlls_load_from_system32_only(self):
+        with patch.object(system.ctypes, "WinDLL", create=True) as load:
+            system.system_dll("srclient.dll", use_last_error=True)
+        load.assert_called_once_with("srclient.dll", use_last_error=True, winmode=system.LOAD_LIBRARY_SEARCH_SYSTEM32)
+
+    def test_user_declared_uninstallers_are_flagged_when_running_as_administrator(self):
+        window = self.checkbox_window()
+        app = models.AppEntry(name="Fake Chrome", uninstall=r"C:\Users\me\payload.exe", hive_label="HKCU", subkey="x")
+        with patch.object(main_window, "is_admin", return_value=True), \
+                patch.object(window, "confirm_risky", return_value=False) as risky, \
+                patch.object(main_window.QMessageBox, "question") as question, \
+                patch.object(window, "run_background") as run:
+            window.uninstall_selected(app)
+        question.assert_not_called()
+        self.assertIn(r"C:\Users\me\payload.exe", risky.call_args.args[1])  # la commande est montrée / command shown
+        run.assert_not_called()
+        machine = models.AppEntry(name="Real", uninstall="u.exe", hive_label="HKLM", subkey="y")
+        with patch.object(main_window, "is_admin", return_value=True), \
+                patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.StandardButton.No) as question:
+            window.uninstall_selected(machine)
+        question.assert_called_once()  # HKLM : question habituelle / HKLM: usual question
+        with patch.object(main_window, "is_admin", return_value=False):
+            self.assertEqual(window.user_entry_warning([app]), "")  # sans droits, rien à craindre / no rights, nothing to fear
+        window.close()
+
+    def scan_env(self, root: Path) -> dict:
+        return {"LOCALAPPDATA": str(root / "Local"), "APPDATA": "", "PROGRAMDATA": "", "PROGRAMFILES": "",
+                "PROGRAMFILES(X86)": "", "USERPROFILE": str(root / "Profile"), "TEMP": "", "TMP": "",
+                "PUBLIC": "", "ONEDRIVE": "", "PROGRAMW6432": "", "COMMONPROGRAMFILES": "", "COMMONPROGRAMFILES(X86)": "",
+                "SYSTEMROOT": str(root / "Windows")}
+
+    def test_file_scan_never_follows_a_link_named_after_the_app(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Local").mkdir()
+            (root / "Precious").mkdir()
+            os.symlink(root / "Precious", root / "Local" / "Acme Cleaner", target_is_directory=True)
+            (root / "Local" / "Acme Publisher").mkdir()
+            os.symlink(root / "Precious", root / "Local" / "Vendor", target_is_directory=True)
+            with patch.dict(os.environ, self.scan_env(root)):
+                paths = [c.path for c in cleanup.file_candidates(models.AppEntry(name="Acme Cleaner", publisher="Vendor"))]
+        self.assertEqual(paths, [])
+
+    def test_file_scan_never_offers_personal_or_system_folders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for folder in ("Local", "Profile/Documents", "Windows/Acme Cleaner", "Local/Acme Cleaner"):
+                (root / folder).mkdir(parents=True)
+            with patch.dict(os.environ, self.scan_env(root)):
+                for name, location in (("Documents", root / "Profile" / "Documents"), ("Profile", root / "Profile"),
+                                       ("Acme Cleaner", root / "Windows" / "Acme Cleaner")):
+                    found = [c.path for c in cleanup.file_candidates(models.AppEntry(name=name, location=str(location)))]
+                    self.assertNotIn(str(location.resolve()), found, name)
+                found = [c.path for c in cleanup.file_candidates(models.AppEntry(name="Acme Cleaner"))]
+            self.assertEqual(found, [str((root / "Local" / "Acme Cleaner").resolve())])  # le vrai résidu reste proposé / the real leftover stays
+            self.assertTrue(cleanup.is_protected_folder(Path(root.anchor), set()))  # racine d'un disque / drive root
+
+    def test_recycle_refuses_locations_without_a_recycle_bin(self):
+        self.assertFalse(cleanup.drive_has_recycle_bin(r"\\server\share\Acme"))
+        with patch.object(cleanup, "is_windows", return_value=True), \
+                patch.object(cleanup, "drive_has_recycle_bin", return_value=False):
+            with self.assertRaises(OSError) as raised:
+                cleanup.recycle_path(r"E:\Acme")
+        self.assertEqual(str(raised.exception), cleanup.NOT_RECYCLABLE_ERROR)
 
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 

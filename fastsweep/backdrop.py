@@ -14,7 +14,7 @@ from ctypes import wintypes
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
-from .system import is_windows
+from .system import is_windows, system_dll
 
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_SYSTEMBACKDROP_TYPE = 38  # Windows 11 22H2 (build 22621) et plus / and later
@@ -48,7 +48,7 @@ def prepare_translucency(widget: QWidget) -> bool:
 
 def _set_attribute(hwnd: int, attribute: int, value: int) -> bool:
     try:
-        dwmapi = ctypes.WinDLL("dwmapi")
+        dwmapi = system_dll("dwmapi")
         data = ctypes.c_int(value)
         result = dwmapi.DwmSetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(attribute),
                                               ctypes.byref(data), ctypes.sizeof(data))
@@ -79,7 +79,7 @@ def apply_backdrop(widget: QWidget, kind: int, dark: bool) -> bool:
         # Étendre le cadre à toute la zone cliente pour que le fond DWM la couvre.
         # Extend the frame over the whole client area so the DWM backdrop covers it.
         margins = MARGINS(-1, -1, -1, -1)
-        ctypes.WinDLL("dwmapi").DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(margins))
+        system_dll("dwmapi").DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(margins))
     except (AttributeError, OSError):
         return False
     return _set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, kind)

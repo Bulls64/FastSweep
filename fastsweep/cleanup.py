@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import unicodedata
+import uuid
 import winreg
 from ctypes import wintypes
 from datetime import datetime
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from .inventory import FILE_ATTRIBUTE_REPARSE_POINT, SOFTWARE_ROOTS, UNINSTALL_ROOTS, registry_value
 from .models import AppEntry, FileCandidate, RegistryCandidate, keep_strongest, sort_by_confidence
-from .system import app_data_dir, is_windows, run_hidden
+from .system import app_data_dir, is_windows, run_hidden, system_dll, system_tool
 
 
 MIN_REGISTRY_MATCH_LENGTH = 2
@@ -130,7 +131,7 @@ def backup_registry_keys(candidates: list[RegistryCandidate]) -> Path:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate.path.split("\\")[-1]).strip("._") or "registry-key"
             target = folder / f"{number:02d}-{safe_name}.reg"
             registry_path = f"{candidate.hive_label}\\{candidate.path}"
-            result = run_hidden(["reg.exe", "export", registry_path, str(target), "/y"], timeout=30)
+            result = run_hidden([system_tool("reg.exe"), "export", registry_path, str(target), "/y"], timeout=30)
             if result.returncode != 0 or not target.is_file():
                 raise OSError(result.stderr.strip() or f"reg.exe export failed for {candidate.path}")
             manifest.append({"file": target.name, "registry_path": registry_path})
@@ -142,8 +143,88 @@ def backup_registry_keys(candidates: list[RegistryCandidate]) -> Path:
 
 
 def restore_registry_backup(path: str) -> tuple[bool, str]:
-    result = run_hidden(["reg.exe", "import", path], timeout=60)
+    result = run_hidden([system_tool("reg.exe"), "import", path], timeout=60)
     return result.returncode == 0, result.stderr.strip()
+
+
+# Dossiers personnels de Windows (Known Folders), où qu'ils aient été déplacés. / Windows personal folders, wherever moved.
+KNOWN_FOLDER_IDS = (
+    "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",  # Bureau / Desktop
+    "FDD39AD0-238F-46AF-ADB4-6C85480369C7",  # Documents
+    "374DE290-123F-4565-9164-39C4925E467B",  # Téléchargements / Downloads
+    "33E28130-4E1E-4676-835A-98395C3BC3BB",  # Images / Pictures
+    "4BD8D571-6D19-48D3-BE97-422220080E43",  # Musique / Music
+    "18989B1D-99B5-455B-841C-AB7C74E4DDFC",  # Vidéos / Videos
+)
+# Sous-dossiers du profil qui ne sont jamais les résidus d'une application. / Profile subfolders that are never an app's leftovers.
+PROFILE_FOLDERS = ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "OneDrive", "AppData",
+                   "AppData\\LocalLow", "Favorites", "Contacts", "Links", "Saved Games", "Searches")
+
+
+def known_folder(folder_id: str) -> str:
+    """Chemin d'un Known Folder Windows, "" s'il est inconnu ou hors Windows.
+
+    Path of a Windows Known Folder, "" when unknown or outside Windows.
+    """
+    if not is_windows():
+        return ""
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("data", ctypes.c_ubyte * 16)]
+
+    try:
+        shell32, ole32 = system_dll("shell32"), system_dll("ole32")
+        guid = GUID()
+        ctypes.memmove(guid.data, uuid.UUID(folder_id).bytes_le, 16)
+        path = ctypes.c_wchar_p()
+        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(path)) != 0:
+            return ""
+        try:
+            return path.value or ""
+        finally:
+            ole32.CoTaskMemFree(path)
+    except (AttributeError, OSError, ValueError):
+        return ""
+
+
+def _comparable(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path)).rstrip("\\/")
+
+
+def protected_folders() -> set[str]:
+    """Dossiers que l'analyse ne propose jamais, ni aucun de leurs parents : profil et dossiers personnels,
+    dossiers des programmes et des données, racines analysées elles-mêmes.
+
+    Folders the scan never offers, nor any of their parents: profile and personal folders, program and data
+    folders, the scanned roots themselves.
+    """
+    env = os.environ.get
+    profile = env("USERPROFILE", "")
+    paths = [env(name, "") for name in ("USERPROFILE", "PUBLIC", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "PROGRAMFILES",
+                                        "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
+                                        "TEMP", "TMP", "ONEDRIVE")]
+    if profile:
+        paths += [str(Path(profile) / name) for name in PROFILE_FOLDERS]
+    for root in (env("LOCALAPPDATA", ""), env("APPDATA", ""), env("PROGRAMDATA", "")):
+        if root:
+            menu = Path(root) / "Microsoft" / "Windows" / "Start Menu"
+            paths += [str(Path(root) / "Programs"), str(Path(root) / "Temp"), str(menu), str(menu / "Programs")]
+    paths += [known_folder(folder_id) for folder_id in KNOWN_FOLDER_IDS]
+    return {_comparable(path) for path in paths if path}
+
+
+def is_protected_folder(resolved: Path, protected: set[str]) -> bool:
+    """Vrai pour un dossier protégé, l'un de ses parents (racine d'un disque comprise) ou tout ce qui est dans Windows.
+
+    True for a protected folder, one of its parents (a drive root included) or anything inside Windows.
+    """
+    candidate = _comparable(str(resolved))
+    if not candidate or resolved.parent == resolved:
+        return True  # racine d'un disque / drive root
+    windows = os.environ.get("SYSTEMROOT", "")
+    if windows and (candidate + os.sep).startswith(_comparable(windows) + os.sep):
+        return True
+    return any(folder == candidate or folder.startswith(candidate + os.sep) for folder in protected)
 
 
 def file_candidates(app: AppEntry) -> list[FileCandidate]:
@@ -156,13 +237,24 @@ def file_candidates(app: AppEntry) -> list[FileCandidate]:
         return []
     publisher = normalize_name(app.publisher)
     found: dict[str, FileCandidate] = {}
+    protected = protected_folders()
 
     def add(path: Path, confidence: str, reason: str) -> None:
         try:
+            # Un lien ou une jonction au nom de l'application mènerait n'importe où : refusé avant d'être suivi.
+            # A link or junction named after the app could lead anywhere: refused before being followed.
+            if path_is_reparse_point(path):
+                return
             resolved = path.resolve(strict=True)
+            # Seul le dernier élément du chemin est vérifié ci-dessus ; ses parents peuvent être résolus, pas lui.
+            # Only the last part of the path is checked above; its parents may be resolved, not it.
+            if os.path.normcase(str(resolved)) != os.path.normcase(str(path.parent.resolve(strict=True) / path.name)):
+                return
             if resolved.name in {"", ".", ".."} or any(part.casefold() == "windowsapps" for part in resolved.parts):
                 return
             if not (resolved.is_dir() or resolved.is_file()) or path_is_reparse_point(resolved):
+                return
+            if is_protected_folder(resolved, protected):
                 return
             if normalize_name(resolved.name if resolved.is_dir() else resolved.stem) in SHARED_NAMES:
                 return
@@ -211,7 +303,7 @@ def file_candidates(app: AppEntry) -> list[FileCandidate]:
                     # à l'éditeur ; ne jamais proposer le dossier de l'éditeur lui-même.
                     # Inspect one product level under a vendor directory with an exact
                     # publisher match; never offer the vendor directory itself.
-                    elif publisher and is_dir and name == publisher:
+                    elif publisher and is_dir and name == publisher and not path_is_reparse_point(Path(entry.path)):
                         try:
                             with os.scandir(entry.path) as products:
                                 for product in products:
@@ -237,8 +329,12 @@ def file_candidates_for(apps: list[AppEntry]) -> list[FileCandidate]:
 
 
 def path_is_reparse_point(path: Path) -> bool:
+    """Lien symbolique, jonction ou autre point d'analyse : jamais suivi par le nettoyage.
+
+    Symbolic link, junction or other reparse point: never followed by the cleanup.
+    """
     try:
-        if hasattr(path, "is_junction") and path.is_junction():
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
             return True
         return bool(path.stat(follow_symlinks=False).st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT)
     except (OSError, AttributeError):
@@ -253,20 +349,47 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
     ]
 
 
+# Options de SHFileOperation / SHFileOperation flags
+FO_DELETE = 3
+FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 0x4, 0x10, 0x40, 0x400, 0x4000
+DRIVE_FIXED = 3
+NOT_RECYCLABLE_ERROR = "not-recyclable"  # traduit par l'interface / translated by the interface
+
+
+def drive_has_recycle_bin(path: str) -> bool:
+    """Seuls les disques fixes ont une Corbeille ; ailleurs (réseau, clé USB) Windows supprimerait définitivement.
+
+    Only fixed disks have a Recycle Bin; elsewhere (network, USB stick) Windows would delete permanently.
+    """
+    drive = os.path.splitdrive(os.path.abspath(path))[0]
+    if not drive or drive.startswith(("\\\\", "//")):  # chemin réseau UNC / UNC network path
+        return False
+    get_type = system_dll("kernel32").GetDriveTypeW
+    get_type.argtypes = (wintypes.LPCWSTR,)
+    get_type.restype = wintypes.UINT
+    return get_type(drive + "\\") == DRIVE_FIXED
+
+
 def recycle_path(path: str) -> None:
     """Déplace un fichier ou un dossier vers la Corbeille Windows, sans jamais le supprimer définitivement.
 
     Move a file or folder to the Windows Recycle Bin, never permanently delete it.
+    Un emplacement sans Corbeille est refusé (OSError ``NOT_RECYCLABLE_ERROR``). Si la Corbeille ne peut pas
+    recevoir l'élément (trop gros), Windows demande avant de supprimer définitivement au lieu de le faire en silence.
+    A location without a Recycle Bin is refused (OSError ``NOT_RECYCLABLE_ERROR``). If the Recycle Bin cannot take
+    the item (too big), Windows asks before deleting permanently instead of doing it silently.
     """
     if not is_windows():
         raise OSError("Recycle Bin operations are only available on Windows.")
+    if not drive_has_recycle_bin(path):
+        raise OSError(NOT_RECYCLABLE_ERROR)
     buffer = ctypes.create_unicode_buffer(path + "\0\0")
     operation = SHFILEOPSTRUCTW(
-        hwnd=None, wFunc=3, pFrom=ctypes.cast(buffer, wintypes.LPCWSTR), pTo=None,
-        fFlags=0x0040 | 0x0010 | 0x0004 | 0x0400, fAnyOperationsAborted=False,
-        hNameMappings=None, lpszProgressTitle=None,
+        hwnd=None, wFunc=FO_DELETE, pFrom=ctypes.cast(buffer, wintypes.LPCWSTR), pTo=None,
+        fFlags=FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING,
+        fAnyOperationsAborted=False, hNameMappings=None, lpszProgressTitle=None,
     )
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32 = system_dll("shell32", use_last_error=True)
     file_operation = shell32.SHFileOperationW
     file_operation.argtypes = (ctypes.POINTER(SHFILEOPSTRUCTW),)
     file_operation.restype = ctypes.c_int
