@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__, updater
-from .about import AboutDialog
 from .backdrop import ACRYLIC, apply_backdrop, prepare_translucency, set_dark_title_bar
 from .cleanup import (
     backup_registry_keys,
@@ -234,10 +233,8 @@ class MainWindow(QMainWindow):
         side.addWidget(self.settings_nav)
         self.restore_backup_btn = NavButton()
         self.history_btn = NavButton()
-        self.update_btn = NavButton()
-        self.about_btn = NavButton()
-        for button, slot in ((self.restore_backup_btn, self.restore_backup), (self.history_btn, self.show_history),
-                             (self.update_btn, self.show_updates), (self.about_btn, self.show_about)):
+        # « Mises à jour » et « À propos » sont des sections de la page Réglages. / "Updates" and "About" are Settings sections.
+        for button, slot in ((self.restore_backup_btn, self.restore_backup), (self.history_btn, self.show_history)):
             button.setCheckable(False)  # actions, pas des pages / actions, not pages
             button.clicked.connect(slot)
             side.addWidget(button)
@@ -382,7 +379,6 @@ class MainWindow(QMainWindow):
         self.system_label.setText(self.t("system_section"))
         self.restore_nav.setText(self.t("restore_points"))
         self.settings_nav.setText(self.t("settings"))
-        self.about_btn.setText(self.t("about"))
         self.refresh_update_button()
         self.restore_backup_btn.setText(self.t("restore_backup"))
         self.history_btn.setText(self.t("history"))
@@ -441,8 +437,7 @@ class MainWindow(QMainWindow):
                              (self.settings_nav, "settings")):
             button.setIcon(glyph_icon(name, c["text"], c["accent"]))  # accent quand la page est active / accent when active
             button.set_accent(QColor(c["accent"]))
-        for button, name in ((self.restore_backup_btn, "undo"), (self.history_btn, "history"), (self.about_btn, "info"),
-                             (self.update_btn, "download"),
+        for button, name in ((self.restore_backup_btn, "undo"), (self.history_btn, "history"),
                              (self.refresh_btn, "refresh"), (self.scan_btn, "search"), (self.elevate_btn, "shield"),
                              (self.theme_btn, "sun" if self.dark else "moon")):
             button.setIcon(glyph_icon(name, c["text"]))
@@ -451,6 +446,7 @@ class MainWindow(QMainWindow):
         self.uninstall_btn.setIcon(glyph_icon("trash", c["onAccent"]))
         self.search.set_theme(self.dark)
         self.table.set_theme(self.dark)
+        self.settings_page.set_theme(self.dark)
         self.restore_page.set_theme(self.dark)
 
     def apply_theme(self) -> None:
@@ -1117,16 +1113,16 @@ class MainWindow(QMainWindow):
     # --- Mises à jour / Updates ---------------------------------------------------------------------
 
     def refresh_update_button(self) -> None:
-        """Le bouton du volet annonce la version disponible quand il y en a une.
+        """Une mise à jour disponible allume l'entrée « Réglages » du volet et s'affiche dans sa section.
 
-        The sidebar button announces the available version when there is one.
+        An available update lights up the "Settings" sidebar entry and shows in its section.
         """
         info = self.update_info
-        self.update_btn.setText(self.t("update_nav_new" if info else "update_nav"))
-        self.update_btn.setToolTip(self.t("update_available").format(version=info.version) if info else "")
-        self.update_btn.setProperty("highlight", bool(info))
-        self.update_btn.style().unpolish(self.update_btn)
-        self.update_btn.style().polish(self.update_btn)
+        self.settings_nav.setToolTip(self.t("settings_update_badge").format(version=info.version) if info else "")
+        self.settings_nav.setProperty("highlight", bool(info))
+        self.settings_nav.style().unpolish(self.settings_nav)
+        self.settings_nav.style().polish(self.settings_nav)
+        self.settings_page.refresh_update_status()
 
     def set_update_info(self, info: updater.UpdateInfo | None) -> None:
         self.update_info = info if info is not None and info.newer else None
@@ -1214,6 +1210,3 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, self.t("update_restart_error").format(error=exc))
             return
         self.close()
-
-    def show_about(self) -> None:
-        AboutDialog(self, self.dark, self.lang).exec()

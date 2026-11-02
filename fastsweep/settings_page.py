@@ -1,6 +1,6 @@
-"""Page « Réglages » : apparence (thème, langue, opacité des fonds) et mises à jour.
+"""Page « Réglages » : apparence (thème, langue, opacité des fonds), mises à jour et « À propos ».
 
-"Settings" page: appearance (theme, language, background opacity) and updates.
+"Settings" page: appearance (theme, language, background opacity), updates and "About".
 """
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
+from . import __version__
+from .about import AboutSection
 from .theme import DEFAULT_OPACITY
 from .update_ui import SETTING_AUTO_CHECK, SETTING_AUTO_INSTALL
 
@@ -48,8 +51,21 @@ class SettingsPage(QWidget):
         return self.host.t(key)
 
     def build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        # La page défile : avec « À propos », elle dépasse la hauteur d'une petite fenêtre.
+        # The page scrolls: with "About", it is taller than a small window.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("settingsScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.viewport().setAutoFillBackground(False)
+        content = QWidget()
+        content.setObjectName("scrollContent")
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 12, 12)  # place pour la barre de défilement / room for the scroll bar
         layout.setSpacing(8)
 
         self.appearance_label = self.section(layout)
@@ -92,7 +108,7 @@ class SettingsPage(QWidget):
         self.auto_check.toggled.connect(self.save_update_options)
         self.auto_install.toggled.connect(self.save_update_options)
         self.check_now = QPushButton()
-        self.check_now.clicked.connect(self.host.show_updates)
+        self.check_now.clicked.connect(self.host.show_updates)  # recherche, nouveautés, téléchargement / lookup, notes, download
         self.updates_row = self.row(updates, self.check_now)
         for check in (self.auto_check, self.auto_install):
             line = QHBoxLayout()
@@ -100,6 +116,11 @@ class SettingsPage(QWidget):
             line.addWidget(check)
             updates.addLayout(line)
         updates.addSpacing(8)
+
+        self.about_label = self.section(layout)
+        about = self.card(layout)
+        self.about = AboutSection(self.host)
+        about.addWidget(self.about)
         layout.addStretch(1)
         self.update_copy()
 
@@ -190,10 +211,10 @@ class SettingsPage(QWidget):
         self.load()
         self.appearance_label.setText(self.t("settings_appearance"))
         self.updates_label.setText(self.t("settings_updates"))
+        self.about_label.setText(self.t("about"))
         for (title, description), title_key, description_key in (
                 (self.theme_row, "settings_theme", "settings_theme_desc"),
-                (self.language_row, "settings_language", "settings_language_desc"),
-                (self.updates_row, "settings_updates_title", "settings_updates_desc")):
+                (self.language_row, "settings_language", "settings_language_desc")):
             title.setText(self.t(title_key))
             description.setText(self.t(description_key))
         self.opacity_row[0].setText(self.t("settings_opacity"))
@@ -208,8 +229,27 @@ class SettingsPage(QWidget):
         self.auto_check.setText(self.t("update_auto_check"))
         self.auto_install.setText(self.t("update_auto_install"))
         self.auto_install.setToolTip(self.t("update_auto_install_tip"))
-        self.check_now.setText(self.t("settings_check_now"))
         self.refresh_opacity_state()
+        self.refresh_update_status()
+        self.about.update_copy()
+
+    def refresh_update_status(self) -> None:
+        """Version installée et version disponible ; le bouton devient l'action principale quand il y a du nouveau.
+
+        Installed and available version; the button becomes the main action when there is something new.
+        """
+        info = self.host.update_info
+        title, description = self.updates_row
+        title.setText(self.t("settings_updates_title"))
+        status = self.t("update_available").format(version=info.version) if info else self.t("settings_updates_desc")
+        description.setText(f"{self.t('update_current').format(version=__version__)} · {status}")
+        self.check_now.setText(self.t("settings_update_show" if info else "settings_check_now"))
+        self.check_now.setObjectName("primaryButton" if info else "")
+        self.check_now.style().unpolish(self.check_now)
+        self.check_now.style().polish(self.check_now)
+
+    def set_theme(self, dark: bool) -> None:
+        self.about.set_theme(dark)
 
     # --- Actions -----------------------------------------------------------------------------------
 

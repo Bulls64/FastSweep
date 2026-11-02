@@ -1666,12 +1666,16 @@ class HelperTests(unittest.TestCase):
 
     def test_startup_check_is_silent_and_marks_the_sidebar_button(self):
         window = self.startup_window(self.info())
-        self.assertEqual(window.update_btn.text(), window.t("update_nav"))
+        self.assertFalse(window.settings_nav.property("highlight"))
         with patch.object(window, "show_updates") as show:
             window.startup_update_check()
             self.assertTrue(self.wait_until(lambda: window.update_info is not None))
-        self.assertEqual(window.update_btn.text(), window.t("update_nav_new"))
-        self.assertTrue(window.update_btn.property("highlight"))
+        # L'entrée « Réglages » s'allume et sa section annonce la version. / "Settings" lights up and its section names the version.
+        self.assertTrue(window.settings_nav.property("highlight"))
+        self.assertIn("1.0.2", window.settings_nav.toolTip())
+        self.assertIn("1.0.2", window.settings_page.updates_row[1].text())
+        self.assertEqual(window.settings_page.check_now.text(), window.t("settings_update_show"))
+        self.assertEqual(window.settings_page.check_now.objectName(), "primaryButton")
         show.assert_called_once()  # proposée à l'ouverture / offered on startup
         window.close()
 
@@ -1984,36 +1988,46 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(about.ISSUES_URL, about.REPO_URL + "/issues/new")
         self.assertEqual(about.environment()["mode"], "source")  # les tests tournent avec python / tests run with python
 
-    def test_about_dialog_shows_version_license_and_repository_in_both_languages(self):
+    def test_about_section_shows_version_license_and_repository_in_both_languages(self):
+        window = self.checkbox_window()
+        section = window.settings_page.about
         for lang in ("fr", "en"):
-            dialog = about.AboutDialog(None, False, lang)
-            texts = " | ".join(label.text() for label in dialog.findChildren(about.QLabel))
+            if window.lang != lang:
+                window.toggle_language()
+            texts = " | ".join(label.text() for label in section.findChildren(about.QLabel))
             for expected in (about.__version__, "MIT", about.REPO_URL, about.AUTHOR):
                 self.assertIn(expected, texts)
             self.assertIn(i18n.STRINGS[lang]["about_tagline"], texts)
             self.assertNotIn("Clair", texts)
-            dialog.close()
-
-    def test_about_buttons_open_the_repository_and_copy_the_details(self):
-        dialog = about.AboutDialog(None, False, "en")
-        with patch.object(about.QDesktopServices, "openUrl") as open_url:
-            dialog.repo_button.click()
-            dialog.issue_button.click()
-        self.assertEqual([call.args[0].toString() for call in open_url.call_args_list], [about.REPO_URL, about.ISSUES_URL])
-        dialog.copy_button.click()
-        self.assertEqual(about.QGuiApplication.clipboard().text(), about.diagnostics_text())
-        self.assertEqual(dialog.copy_button.text(), i18n.STRINGS["en"]["about_copied"])
-        dialog.restore_copy_label()
-        self.assertEqual(dialog.copy_button.text(), i18n.STRINGS["en"]["about_copy"])
-        dialog.close()
-
-    def test_sidebar_about_entry_opens_the_about_window(self):
-        window = self.checkbox_window()
-        with patch.object(main_window.AboutDialog, "exec", return_value=0) as run:
-            window.about_btn.click()
-        run.assert_called_once()
+            self.assertEqual(window.settings_page.about_label.text(), i18n.STRINGS[lang]["about"])
         window.close()
 
+    def test_about_buttons_open_the_repository_and_copy_the_details(self):
+        window = self.checkbox_window()
+        section = window.settings_page.about
+        with patch.object(about.QDesktopServices, "openUrl") as open_url:
+            section.repo_button.click()
+            section.issue_button.click()
+        self.assertEqual([call.args[0].toString() for call in open_url.call_args_list], [about.REPO_URL, about.ISSUES_URL])
+        section.copy_button.click()
+        self.assertEqual(about.QGuiApplication.clipboard().text(), about.diagnostics_text())
+        self.assertEqual(section.copy_button.text(), window.t("about_copied"))
+        section.restore_copy_label()
+        self.assertEqual(section.copy_button.text(), window.t("about_copy"))
+        window.close()
+
+    def test_sidebar_no_longer_has_updates_and_about_entries(self):
+        window = self.checkbox_window()
+        texts = [button.text() for button in window.sidebar.findChildren(main_window.NavButton)]
+        self.assertIn(window.t("settings"), texts)
+        self.assertNotIn(window.t("about"), texts)
+        self.assertFalse(hasattr(window, "update_btn") or hasattr(window, "about_btn"))
+        with patch.object(main_window.UpdateDialog, "exec", return_value=0) as run, \
+                patch.object(updater, "check_latest", return_value=self.info(newer=False)):
+            window.switch_mode("settings")
+            window.settings_page.check_now.click()  # les mises à jour s'ouvrent depuis les Réglages / updates open from Settings
+        run.assert_called_once()
+        window.close()
 
 class FakeRegistry:
     """Remplace les appels winreg utilisés par registry_candidates par un arbre en mémoire.

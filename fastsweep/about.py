@@ -1,6 +1,8 @@
-"""Fenêtre « À propos » : version, licence, dépôt GitHub, environnement, et copie des informations pour un rapport de bogue.
+"""Section « À propos » des Réglages : version, licence, dépôt GitHub, environnement, et copie des informations
+pour un rapport de bogue.
 
-"About" window: version, license, GitHub repository, environment, and copying the details for a bug report.
+"About" section of the Settings: version, license, GitHub repository, environment, and copying the details
+for a bug report.
 """
 from __future__ import annotations
 
@@ -10,12 +12,11 @@ import sys
 import PySide6
 from PySide6.QtCore import QTimer, Qt, QUrl, qVersion
 from PySide6.QtGui import QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from . import __version__
-from .dialogs import FluentDialog
 from .glyphs import bolt_pixmap, glyph_icon
-from .i18n import APP_NAME, STRINGS
+from .i18n import APP_NAME
 from .system import app_data_dir, is_admin
 from .theme import colors
 from .updater import REPO
@@ -70,85 +71,108 @@ def diagnostics_text() -> str:
     ))
 
 
-class AboutDialog(FluentDialog):
-    def __init__(self, parent: QWidget | None, dark: bool, lang: str):
-        self.strings = strings = STRINGS[lang]
-        super().__init__(parent, strings["about_title"], dark)
-        self.setMinimumWidth(720)
-        self.body.itemAt(0).widget().hide()  # le titre standard : remplacé par l'en-tête ci-dessous / the standard title: replaced by the header below
-        c = colors(dark)
+class AboutSection(QWidget):
+    """Section « À propos » de la page Réglages : identité, détails de l'environnement et liens vers le dépôt.
+
+    "About" section of the Settings page: identity, environment details and links to the repository.
+    ``host`` fournit t() et dark. / ``host`` provides t() and dark.
+    """
+
+    def __init__(self, host):
+        super().__init__()
+        self.host = host
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         header = QHBoxLayout()
         header.setSpacing(16)
-        mark = QLabel()
-        mark.setObjectName("brandMark")
-        mark.setFixedSize(MARK_SIZE, MARK_SIZE)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setPixmap(bolt_pixmap(c["onAccent"], 46))
-        header.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
+        self.mark = QLabel()
+        self.mark.setObjectName("brandMark")
+        self.mark.setFixedSize(MARK_SIZE, MARK_SIZE)
+        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignTop)
         names = QVBoxLayout()
         names.setSpacing(0)
         title = QLabel(APP_NAME)
-        title.setObjectName("pageTitle")
-        self.version_label = QLabel(strings["about_version"].format(version=__version__))
-        self.version_label.setObjectName("brandTitle")
-        tagline = QLabel(strings["about_tagline"])
-        tagline.setObjectName("muted")
-        tagline.setWordWrap(True)
-        for label in (title, self.version_label, tagline):
+        title.setObjectName("brandTitle")
+        self.version_label = QLabel()
+        self.tagline = QLabel()
+        self.tagline.setObjectName("muted")
+        self.tagline.setWordWrap(True)
+        for label in (title, self.version_label, self.tagline):
             names.addWidget(label)
         header.addLayout(names, 1)
-        self.body.addLayout(header)
+        layout.addLayout(header)
 
-        description = QLabel(strings["about_description"])
-        description.setWordWrap(True)
-        self.body.addWidget(description)
+        self.description = QLabel()
+        self.description.setWordWrap(True)
+        layout.addWidget(self.description)
 
-        card = QFrame()
-        card.setObjectName("card")
-        grid = QGridLayout(card)
-        grid.setContentsMargins(16, 12, 16, 12)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(24)
-        grid.setVerticalSpacing(8)
+        grid.setVerticalSpacing(4)
         grid.setColumnStretch(1, 1)
-        env = environment()
-        rows = (
-            ("about_run", strings["about_mode_" + env["mode"]]),
-            ("about_license", f"{LICENSE_NAME} — © 2026 {AUTHOR}"),
-            ("about_repo", REPO_URL),
-            ("about_windows", env["windows"] + (" · " + strings["about_admin"] if env["admin"] == "yes" else "")),
-            ("about_python", f"{env['python']} · {env['qt']}"),
-            ("about_data", env["data"]),
-        )
-        for row, (key, value) in enumerate(rows):
-            name = QLabel(strings[key])
+        self.rows: list[tuple[QLabel, QLabel, str]] = []
+        for row, key in enumerate(("about_run", "about_license", "about_repo", "about_windows", "about_python", "about_data")):
+            name = QLabel()
             name.setObjectName("muted")
-            text = QLabel(value)
-            text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)  # copiable à la souris / mouse-copyable
-            # Hauteur minimale explicite : sans elle, la hauteur calculée avant l'application de la feuille de style
-            # rogne le bas des lettres (j, p, g…). Pas de retour à la ligne : les valeurs sont courtes.
-            # Explicit minimum height: without it, the height computed before the style sheet applies clips the
-            # bottom of letters (j, p, g…). No word wrap: the values are short.
+            value = QLabel()
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)  # copiable à la souris / mouse-copyable
+            # Hauteur minimale explicite : sans elle, le bas des lettres (j, p, g…) est rogné. / Explicit height: avoids clipped descenders.
             name.setMinimumHeight(ROW_HEIGHT)
-            text.setMinimumHeight(ROW_HEIGHT)
+            value.setMinimumHeight(ROW_HEIGHT)
             grid.addWidget(name, row, 0, Qt.AlignmentFlag.AlignTop)
-            grid.addWidget(text, row, 1)
-        self.body.addWidget(card)
+            grid.addWidget(value, row, 1)
+            self.rows.append((name, value, key))
+        layout.addLayout(grid)
 
-        credits = QLabel(strings["about_credits"])
-        credits.setObjectName("muted")
-        credits.setWordWrap(True)
-        self.body.addWidget(credits)
-
-        self.repo_button = self.add_footer_button(strings["about_open_repo"], "primaryButton", "export")
-        self.issue_button = self.add_footer_button(strings["about_report"])
-        self.copy_button = self.add_footer_button(strings["about_copy"])
-        close = self.add_footer_button(strings["close"])
-        self.repo_button.setIcon(glyph_icon("export", c["onAccent"]))
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        self.repo_button, self.issue_button, self.copy_button = QPushButton(), QPushButton(), QPushButton()
         self.repo_button.clicked.connect(lambda: self.open_url(REPO_URL))
         self.issue_button.clicked.connect(lambda: self.open_url(ISSUES_URL))
         self.copy_button.clicked.connect(self.copy_details)
-        close.clicked.connect(self.accept)
+        for button in (self.repo_button, self.issue_button, self.copy_button):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        self.credits = QLabel()
+        self.credits.setObjectName("muted")
+        self.credits.setWordWrap(True)
+        layout.addWidget(self.credits)
+        self.update_copy()
+        self.set_theme(host.dark)
+
+    def t(self, key: str) -> str:
+        return self.host.t(key)
+
+    def update_copy(self) -> None:
+        env = environment()
+        values = {
+            "about_run": self.t("about_mode_" + env["mode"]),
+            "about_license": f"{LICENSE_NAME} — © 2026 {AUTHOR}",
+            "about_repo": REPO_URL,
+            "about_windows": env["windows"] + (" · " + self.t("about_admin") if env["admin"] == "yes" else ""),
+            "about_python": f"{env['python']} · {env['qt']}",
+            "about_data": env["data"],
+        }
+        for name, value, key in self.rows:
+            name.setText(self.t(key))
+            value.setText(values[key])
+        self.version_label.setText(self.t("about_version").format(version=__version__))
+        self.tagline.setText(self.t("about_tagline"))
+        self.description.setText(self.t("about_description"))
+        self.credits.setText(self.t("about_credits"))
+        self.repo_button.setText(self.t("about_open_repo"))
+        self.issue_button.setText(self.t("about_report"))
+        self.copy_button.setText(self.t("about_copy"))
+
+    def set_theme(self, dark: bool) -> None:
+        c = colors(dark)
+        self.mark.setPixmap(bolt_pixmap(c["onAccent"], 46))
+        self.repo_button.setIcon(glyph_icon("export", c["text"]))
 
     @staticmethod
     def open_url(url: str) -> None:
@@ -160,11 +184,11 @@ class AboutDialog(FluentDialog):
 
     def copy_details(self) -> None:
         QGuiApplication.clipboard().setText(diagnostics_text())
-        self.copy_button.setText(self.strings["about_copied"])
+        self.copy_button.setText(self.t("about_copied"))
         QTimer.singleShot(1800, self.restore_copy_label)
 
     def restore_copy_label(self) -> None:
         try:
-            self.copy_button.setText(self.strings["about_copy"])
+            self.copy_button.setText(self.t("about_copy"))
         except RuntimeError:
-            pass  # fenêtre déjà fermée / window already closed
+            pass  # page déjà détruite / page already destroyed

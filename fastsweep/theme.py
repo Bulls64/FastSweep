@@ -244,6 +244,7 @@ def _theme_stylesheet(dark: bool, translucent: bool, opacity: int) -> str:
         QListWidget::item {{ border: none; padding: 0 12px; }}
         QScrollArea {{ background: {c["card"]}; border: 1px solid {c["cardStroke"]}; border-radius: 4px; }}
         #scrollContent {{ background: transparent; }}
+        QScrollArea#settingsScroll {{ background: transparent; border: none; }}
 
         QProgressBar {{ background: {c["track"]}; border: none; border-radius: 2px; max-height: 4px; min-height: 4px; }}
         QProgressBar::chunk {{ background: {c["accent"]}; border-radius: 2px; }}
