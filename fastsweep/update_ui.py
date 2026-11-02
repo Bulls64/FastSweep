@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QTextCursor, QTextDocument, QTextFormat
 from PySide6.QtWidgets import QCheckBox, QLabel, QProgressBar, QTextBrowser, QWidget
 
 from . import __version__, updater
@@ -63,6 +63,36 @@ class UpdateTask(QObject):
         threading.Thread(target=run, daemon=True, name="FastSweepUpdate").start()
 
 
+# Espacements compacts des notes de version, en pixels (Qt met par défaut de larges marges autour de chaque bloc).
+# Compact spacing for release notes, in pixels (Qt puts wide margins around every block by default).
+NOTES_MARGIN, NOTES_INDENT, HEADING_TOP, HEADING_BOTTOM, BLOCK_BOTTOM, ITEM_BOTTOM, AFTER_LIST = 6, 18, 8, 2, 4, 1, 6
+
+
+def compact_document(document: QTextDocument) -> None:
+    """Resserre un document Markdown : marges réduites, titres à peine plus grands que le texte, listes peu retirées.
+
+    Tightens a Markdown document: smaller margins, headings barely bigger than the text, lists barely indented.
+    """
+    document.setDocumentMargin(NOTES_MARGIN)
+    document.setIndentWidth(NOTES_INDENT)
+    block, first, after_list = document.begin(), True, False
+    while block.isValid():
+        cursor = QTextCursor(block)
+        layout = block.blockFormat()
+        heading = layout.headingLevel() > 0
+        in_list = block.textList() is not None
+        # Un titre se détache un peu ; un paragraphe qui suit une liste aussi. / A heading stands out a little; so does a paragraph after a list.
+        layout.setTopMargin(0 if first else HEADING_TOP if heading else AFTER_LIST if after_list and not in_list else 0)
+        layout.setBottomMargin(HEADING_BOTTOM if heading else (ITEM_BOTTOM if block.textList() else BLOCK_BOTTOM))
+        cursor.setBlockFormat(layout)
+        if heading:  # gras à la taille du texte plutôt qu'un grand titre / bold at text size rather than a big title
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            text_format = cursor.charFormat()
+            text_format.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
+            cursor.mergeCharFormat(text_format)
+        block, first, after_list = block.next(), False, in_list
+
+
 def describe_error(strings: dict, key: str, detail: str) -> str:
     """Message d'erreur de mise à jour dans la langue de l'interface.
 
@@ -89,7 +119,7 @@ class UpdateDialog(FluentDialog):
         self.task: UpdateTask | None = None
         self._on_done = None  # que faire du résultat de la tâche en cours / what to do with the current task's result
         self.downloading = False
-        self.setMinimumSize(640, 560)
+        self.setMinimumSize(640, 460)
         strings = self.strings
 
         self.version_label = QLabel(strings["update_current"].format(version=__version__))
@@ -169,8 +199,10 @@ class UpdateDialog(FluentDialog):
         else:
             lines.append(strings["update_uptodate"])
         self.status_label.setText("\n".join(lines))
-        if info.newer and info.notes:
-            self.notes.setMarkdown(info.notes)
+        notes = updater.clean_notes(info.notes, self.lang, info.tag) if info.newer else ""
+        if notes:
+            self.notes.setMarkdown(notes)
+            compact_document(self.notes.document())
         else:
             self.notes.setPlainText(strings["update_notes_none"] if info.newer else "")
         self.notes.setVisible(info.newer)

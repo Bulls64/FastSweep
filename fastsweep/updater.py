@@ -118,6 +118,39 @@ def _fetch_json(url: str):
         raise UpdateError("update_err_network", str(getattr(exc, "reason", None) or exc)) from exc
 
 
+_RULE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", re.MULTILINE)  # ligne horizontale Markdown / Markdown horizontal rule
+_WORDS = {
+    "fr": {"nouveautés", "corrections", "les", "des", "une", "est", "pour", "avec", "depuis", "plus", "dans", "mise", "jour"},
+    "en": {"new", "fixes", "the", "and", "with", "from", "is", "for", "now", "no", "longer", "update", "when"},
+}
+
+
+def clean_notes(text: str, lang: str, tag: str = "") -> str:
+    """Notes de version prêtes à afficher : fins de ligne normalisées, lignes vides en série réduites à une,
+    titre qui ne fait que répéter le numéro de version retiré, et seulement la partie dans la langue voulue
+    quand les notes sont rédigées en plusieurs langues séparées par une ligne horizontale.
+
+    Release notes ready to display: line endings normalized, runs of blank lines reduced to one, a heading
+    that only repeats the version number removed, and only the part in the wanted language when the notes are
+    written in several languages separated by a horizontal rule.
+    """
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    sections = [part.strip() for part in _RULE.split(text) if part.strip()]
+    if len(sections) > 1 and lang in _WORDS:
+        def score(part: str, language: str) -> int:
+            words = re.findall(r"[a-zàâçéèêëîïôûùüÿœ]+", part.casefold())
+            return sum(word in _WORDS[language] for word in words)
+        others = [language for language in _WORDS if language != lang]
+        best = max(sections, key=lambda part: score(part, lang) - max(score(part, other) for other in others))
+        if all(score(best, lang) > score(best, other) for other in others):
+            text = best  # sinon, langue incertaine : tout garder / otherwise, unsure language: keep everything
+    version = ".".join(str(part) for part in parse_version(tag))
+    lines = text.strip().split("\n")
+    if lines and version and re.fullmatch(rf"#+\s*v?{re.escape(version)}\s*", lines[0].strip(), re.IGNORECASE):
+        lines = lines[1:]  # déjà dit par « La version … est disponible » / already said by "Version … is available"
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in lines)).strip()
+
+
 def check_latest(current: str = __version__) -> UpdateInfo:
     """Interroge GitHub sur la dernière release publiée ; ``newer`` dit si elle dépasse la version installée.
 

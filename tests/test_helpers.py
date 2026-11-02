@@ -1776,6 +1776,45 @@ class HelperTests(unittest.TestCase):
                 close.assert_not_called()  # l'utilisateur garde sa fenêtre et un message / user keeps the window and a message
         window.close()
 
+    BILINGUAL_NOTES = ("### v1.0.2\r\n\r\n**New**\r\n- Update from GitHub at startup.\r\n\r\n**Fixes**\r\n- The watcher no longer waits.\r\n\r\n"
+                       "---\r\n\r\n### v1.0.2\r\n\r\n**Nouveautés**\r\n- Mise à jour depuis GitHub au démarrage.\r\n\r\n\r\n\r\n"
+                       "**Corrections**\r\n- La surveillance n'attend plus.\r\n\r\n")
+
+    def test_release_notes_keep_only_the_interface_language(self):
+        french = updater.clean_notes(self.BILINGUAL_NOTES, "fr", "v1.0.2")
+        english = updater.clean_notes(self.BILINGUAL_NOTES, "en", "v1.0.2")
+        self.assertTrue(french.startswith("**Nouveautés**"))  # titre « v1.0.2 » redondant retiré / redundant heading removed
+        self.assertNotIn("Fixes", french)
+        self.assertTrue(english.startswith("**New**"))
+        self.assertNotIn("Corrections", english)
+        for text in (french, english):
+            self.assertNotIn("\r", text)
+            self.assertNotIn("\n\n\n", text)  # plus de lignes vides en série / no more runs of blank lines
+            self.assertNotIn("---", text)
+
+    def test_release_notes_stay_whole_when_the_language_is_unclear(self):
+        single = "### v1.0.3\n\n- Bug fixes\n- Nouvelles traductions"
+        self.assertEqual(updater.clean_notes(single, "fr", "v1.0.3"), "- Bug fixes\n- Nouvelles traductions")
+        two_unknown = "Release 42\n\n---\n\n1.2.3"
+        self.assertEqual(updater.clean_notes(two_unknown, "fr", "v1.0.3"), two_unknown)  # rien de reconnu : tout garder / nothing recognized: keep it all
+        self.assertTrue(updater.clean_notes("### Version 2\n- x", "en", "v1.0.3").startswith("### Version 2"))  # pas le numéro : gardé / not the number: kept
+        self.assertEqual(updater.clean_notes("", "fr", "v1"), "")
+
+    def test_release_notes_are_rendered_compactly(self):
+        dialog = self.update_dialog(self.info(notes=self.BILINGUAL_NOTES))
+        document = dialog.notes.document()
+        self.assertEqual(document.documentMargin(), update_ui.NOTES_MARGIN)
+        self.assertEqual(document.indentWidth(), update_ui.NOTES_INDENT)
+        text = dialog.notes.toPlainText()
+        self.assertIn("Nouveautés", text)
+        self.assertNotIn("Fixes", text)
+        block = document.begin()
+        while block.isValid():
+            self.assertLessEqual(block.blockFormat().bottomMargin(), update_ui.BLOCK_BOTTOM)
+            self.assertLessEqual(block.blockFormat().topMargin(), update_ui.HEADING_TOP)
+            block = block.next()
+        dialog.close()
+
     def test_update_history_entries_are_named_in_both_languages(self):
         for lang in ("fr", "en"):
             self.assertIn("history_update", i18n.STRINGS[lang])
