@@ -1821,6 +1821,44 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(dialogs.HistoryDialog.OPERATION_KEYS["update"], "history_update")
 
 
+    # --- Désinstallation d'une app du Store / Store app uninstall ----------------------------------------
+
+    def store_app(self, name="2505FireCubeStudios.WinverUWP", full="2505FireCubeStudios.WinverUWP_2.1.4.0_x64__k45w5yt88e21j"):
+        return models.AppEntry(name="Winver UWP", source="store", package_name=name, package_full_name=full)
+
+    def test_store_uninstall_looks_up_by_name_never_with_an_abbreviated_parameter(self):
+        script = uninstall.store_uninstall_script(self.store_app())
+        self.assertNotIn("Get-AppxPackage -Package", script)  # devenait -PackageTypeFilter / became -PackageTypeFilter
+        self.assertIn("Get-AppxPackage -Name '2505FireCubeStudios.WinverUWP'", script)
+        self.assertIn("$_.PackageFullName -eq '2505FireCubeStudios.WinverUWP_2.1.4.0_x64__k45w5yt88e21j'", script)
+        self.assertIn("Remove-AppxPackage -Package $package[0].PackageFullName", script)
+        quoted = uninstall.store_uninstall_script(self.store_app("O'Brien.App", "O'Brien.App_1.0_x64__abc"))
+        self.assertIn("-Name 'O''Brien.App'", quoted)  # apostrophe doublée / doubled quote
+        self.assertIn("-eq 'O''Brien.App_1.0_x64__abc'", quoted)
+        self.assertIn("@(Get-AppxPackage | Where-Object", uninstall.store_uninstall_script(self.store_app(name="")))
+
+    def test_store_uninstall_runs_the_script_and_reports_powershell_errors(self):
+        app = self.store_app()
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(uninstall, "run_powershell", return_value=ok) as run:
+            result = uninstall.perform_uninstall(app, False)
+        self.assertEqual(run.call_args.args[0], uninstall.store_uninstall_script(app))
+        self.assertEqual((result["source"], result["exit_code"]), ("store", 0))
+        failed = subprocess.CompletedProcess([], 1, "", "Remove-AppxPackage : Accès refusé")
+        with patch.object(uninstall, "run_powershell", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "Accès refusé"):
+                uninstall.perform_uninstall(app, False)
+
+    @unittest.skipUnless(sys.platform == "win32", "PowerShell et Appx : Windows uniquement / Windows only")
+    def test_store_uninstall_script_is_accepted_by_real_powershell(self):
+        # Package inexistant : rien n'est désinstallé, mais PowerShell doit accepter tous les paramètres.
+        # Missing package: nothing is uninstalled, but PowerShell must accept every parameter.
+        app = self.store_app("FastSweep.Test.DoesNotExist", "FastSweep.Test.DoesNotExist_1.0.0.0_x64__0000000000000")
+        result = system.run_powershell(uninstall.store_uninstall_script(app), timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("PackageTypeFilter", result.stderr)
+        self.assertIn("Package is no longer installed", result.stderr, result.stderr)
+
     # --- Fenêtre « À propos » / About window ------------------------------------------------------------
 
     def test_about_diagnostics_name_the_version_and_the_environment(self):

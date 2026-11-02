@@ -284,6 +284,32 @@ def describe_uninstall_error(error: str, lang: str) -> str:
     return error
 
 
+def _ps_literal(value: str) -> str:
+    """Chaîne PowerShell entre apostrophes (les apostrophes internes sont doublées). / Single-quoted PowerShell string."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def store_uninstall_script(app: AppEntry) -> str:
+    """Script PowerShell qui retire un package du Store pour le compte courant.
+
+    PowerShell script that removes a Store package for the current account.
+    Get-AppxPackage n'a pas de paramètre -Package : PowerShell complétait cette abréviation en -PackageTypeFilter et
+    rejetait le nom complet du package. On cherche par -Name (le nom court), puis on retient le nom complet exact ;
+    Remove-AppxPackage, lui, prend bien -Package avec le nom complet.
+    Get-AppxPackage has no -Package parameter: PowerShell expanded that abbreviation to -PackageTypeFilter and
+    rejected the package full name. Look up by -Name (the short name), then keep the exact full name;
+    Remove-AppxPackage does take -Package with the full name.
+    """
+    full_name = _ps_literal(app.package_full_name)
+    lookup = f"Get-AppxPackage -Name {_ps_literal(app.package_name)}" if app.package_name else "Get-AppxPackage"
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$package = @({lookup} | Where-Object {{ $_.PackageFullName -eq {full_name} }})\n"
+        "if ($package.Count -eq 0) { throw 'Package is no longer installed for this account.' }\n"
+        "Remove-AppxPackage -Package $package[0].PackageFullName -ErrorAction Stop\n"
+    )
+
+
 def perform_uninstall(app: AppEntry, create_restore: bool, silent: bool = False) -> dict:
     """Désinstalle une application ; ``silent`` utilise la commande sans assistant quand elle existe.
 
@@ -295,14 +321,7 @@ def perform_uninstall(app: AppEntry, create_restore: bool, silent: bool = False)
         if not restored:
             raise RuntimeError(RESTORE_POINT_ERROR_PREFIX + detail)
     if app.source == "store":
-        escaped = app.package_full_name.replace("'", "''")
-        script = (
-            "$ErrorActionPreference='Stop'; "
-            f"$package=Get-AppxPackage -Package '{escaped}'; "
-            "if (-not $package) { throw 'Package is no longer installed for this account.' }; "
-            "$package | Remove-AppxPackage -ErrorAction Stop"
-        )
-        result = run_powershell(script, timeout=180)
+        result = run_powershell(store_uninstall_script(app), timeout=180)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Package removal failed.")
         return {"restored": restored, "source": "store", "exit_code": 0, "silent": True}  # le Store n'a pas d'assistant / no wizard
