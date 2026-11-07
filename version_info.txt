@@ -4,8 +4,8 @@
 # FileVersion/ProductVersion strings in line with fastsweep/__init__.py (__version__).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 7, 0),
-    prodvers=(1, 0, 7, 0),
+    filevers=(1, 0, 8, 0),
+    prodvers=(1, 0, 8, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,11 +19,11 @@ VSVersionInfo(
         '040C04B0',
         [StringStruct('CompanyName', 'Bulls64'),
          StringStruct('FileDescription', 'FastSweep — gestionnaire de désinstallation'),
-         StringStruct('FileVersion', '1.0.7'),
+         StringStruct('FileVersion', '1.0.8'),
          StringStruct('InternalName', 'FastSweep'),
          StringStruct('OriginalFilename', 'FastSweep.exe'),
          StringStruct('ProductName', 'FastSweep'),
-         StringStruct('ProductVersion', '1.0.7')])
+         StringStruct('ProductVersion', '1.0.8')])
     ]),
     VarFileInfo([VarStruct('Translation', [0x040C, 1200])])
   ]
