@@ -22,13 +22,14 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__
+from . import __version__, signing
 from .system import is_windows
 
 REPO = "Bulls64/FastSweep"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
 ASSET_NAME = "FastSweep.exe"
+SIGNATURE_NAME = ASSET_NAME + signing.SIGNATURE_SUFFIX
 # Seul un fichier publié par ce dépôt est téléchargé ; GitHub redirige ensuite vers son stockage (githubusercontent.com).
 # Only a file published by this repository is downloaded; GitHub then redirects to its storage (githubusercontent.com).
 DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
@@ -39,7 +40,7 @@ CHUNK = 256 * 1024
 # Caps: a server that would send endlessly fills neither memory nor disk (the exe is about 60 MB).
 MAX_DOWNLOAD = 200 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
-LEFTOVER_SUFFIXES = (".old", ".new", ".part")  # fichiers que la mise à jour crée à côté de l'exécutable / files the update creates next to the executable
+LEFTOVER_SUFFIXES = (".old", ".new", ".new.sig", ".part")  # fichiers que la mise à jour crée à côté de l'exécutable / files the update creates next to the executable
 
 
 class UpdateError(Exception):
@@ -65,10 +66,15 @@ class UpdateInfo:
     page: str
     newer: bool  # plus récente que la version installée / newer than the installed version
     published: str = ""  # date de publication ISO 8601 donnée par GitHub / ISO 8601 publication date from GitHub
+    signature_url: str = ""  # lien de FastSweep.exe.sig, "" s'il n'est pas joint / link of FastSweep.exe.sig, "" if not attached
 
     @property
     def installable(self) -> bool:
-        return bool(self.url)
+        """Exécutable joint, et sa signature quand FastSweep vérifie les signatures (elle est jointe juste après l'exe).
+
+        Executable attached, and its signature when FastSweep checks signatures (it is attached right after the exe).
+        """
+        return bool(self.url) and (bool(self.signature_url) or not signing.enabled())
 
     @property
     def published_date(self) -> str:
@@ -183,24 +189,33 @@ def check_latest(current: str = __version__) -> UpdateInfo:
     numbers = parse_version(tag)
     if not numbers:
         raise UpdateError("update_err_data")
-    url, size, sha256 = "", 0, ""
+    url, size, sha256, signature_url = "", 0, "", ""
+    found = set()
     for asset in data.get("assets") or []:
-        if isinstance(asset, dict) and str(asset.get("name", "")).casefold() == ASSET_NAME.casefold() \
-                and asset.get("state", "uploaded") == "uploaded":
-            link = str(asset.get("browser_download_url") or "")
-            url = link if link.startswith(DOWNLOAD_PREFIX) else ""
+        if not isinstance(asset, dict) or asset.get("state", "uploaded") != "uploaded":
+            continue
+        name = str(asset.get("name", "")).casefold()
+        if name in found:
+            continue  # seul le premier compte / only the first one counts
+        link = str(asset.get("browser_download_url") or "")
+        link = link if link.startswith(DOWNLOAD_PREFIX) else ""
+        if name == SIGNATURE_NAME.casefold():
+            found.add(name)
+            signature_url = link
+        elif name == ASSET_NAME.casefold():
+            found.add(name)
+            url = link
             try:
                 size = max(int(asset.get("size") or 0), 0)
             except (TypeError, ValueError):
                 size = 0
             digest = str(asset.get("digest") or "").lower()
             sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else ""
-            break
     page = str(data.get("html_url") or "")
     version = ".".join(str(part) for part in numbers)
     return UpdateInfo(version, tag, str(data.get("body") or "").strip(), url, size, sha256,
                       page if page.startswith(f"https://github.com/{REPO}/") else RELEASES_URL,
-                      is_newer(version, current), str(data.get("published_at") or ""))
+                      is_newer(version, current), str(data.get("published_at") or ""), signature_url)
 
 
 def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> Path:
@@ -209,16 +224,22 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
     Downloads the executable to ``destination`` after checking its size, its SHA-256 sum and its type.
     ``progress(fait, total)`` est appelé au fil de l'eau ; ``stop`` (un Event) interrompt le téléchargement.
     ``progress(done, total)`` is called along the way; ``stop`` (an Event) interrupts the download.
+    Quand FastSweep vérifie les signatures, la signature de la release est aussi téléchargée, vérifiée et gardée à
+    côté du fichier (``.sig``) pour être revérifiée à l'installation.
+    When FastSweep checks signatures, the release signature is also downloaded, checked and kept next to the file
+    (``.sig``) to be checked again at install time.
     Le fichier n'apparaît sous son vrai nom qu'une fois complet et vérifié.
     The file only appears under its real name once complete and verified.
     """
-    if not info.installable or not info.url.startswith(DOWNLOAD_PREFIX):
+    if not info.url or not info.url.startswith(DOWNLOAD_PREFIX):
         raise UpdateError("update_no_exe")
+    if signing.enabled() and not info.signature_url.startswith(DOWNLOAD_PREFIX):
+        raise UpdateError("update_err_unsigned")
     if info.size > MAX_DOWNLOAD:
         raise UpdateError("update_err_too_big", _megabytes(info.size))
     part = destination.with_name(destination.name + ".part")
     digest = hashlib.sha256()
-    done = 0
+    done, finished = 0, False
     try:
         with open_url(_request(info.url, "application/octet-stream")) as response:
             if not _trusted(response.geturl()):  # redirection vers un hôte inattendu / redirect to an unexpected host
@@ -242,17 +263,60 @@ def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> P
                     if progress is not None:
                         progress(done, total)
         _check(part, info, done, digest.hexdigest())
+        if signing.enabled():
+            signature = _fetch_signature(info)
+            _check_signature(info, digest.hexdigest(), signature)
+            signature_path(destination).write_bytes(signature)
         os.replace(part, destination)
+        finished = True
     except PermissionError as exc:
         raise UpdateError("update_err_write", str(exc)) from exc
     except OSError as exc:  # réseau coupé en route ou disque plein / network lost midway or full disk
         raise UpdateError("update_err_network", str(getattr(exc, "reason", None) or exc)) from exc
     finally:
-        try:
-            part.unlink(missing_ok=True)  # notre propre fichier temporaire / our own temporary file
-        except OSError:
-            pass
+        leftovers = (part,) if finished else (part, signature_path(destination))
+        for path in leftovers:  # nos propres fichiers temporaires / our own temporary files
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return destination
+
+
+def signature_path(staged: Path) -> Path:
+    return staged.with_name(staged.name + signing.SIGNATURE_SUFFIX)
+
+
+def _fetch_signature(info: UpdateInfo) -> bytes:
+    """Contenu de FastSweep.exe.sig (quelques dizaines d'octets), téléchargé depuis le dépôt seulement.
+
+    Content of FastSweep.exe.sig (a few dozen bytes), downloaded from the repository only.
+    """
+    try:
+        with open_url(_request(info.signature_url, "application/octet-stream")) as response:
+            if not _trusted(response.geturl()):
+                raise UpdateError("update_err_host", urlparse(response.geturl()).hostname or "")
+            data = response.read(signing.MAX_SIGNATURE_FILE + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise UpdateError("update_err_unsigned") from exc
+        raise UpdateError("update_err_network", f"HTTP {exc.code}") from exc
+    if len(data) > signing.MAX_SIGNATURE_FILE:
+        raise UpdateError("update_err_signature")
+    return data
+
+
+def _check_signature(info: UpdateInfo, sha256: str, data: bytes) -> None:
+    """La signature couvre-t-elle cette version et ce fichier ? Sinon UpdateError.
+
+    Does the signature cover this version and this file? Otherwise UpdateError.
+    """
+    try:
+        signature = signing.decode_signature(data)
+    except ValueError as exc:
+        raise UpdateError("update_err_signature") from exc
+    if not signing.verify(info.version, sha256, signature):
+        raise UpdateError("update_err_signature")
 
 
 def _megabytes(size: int) -> str:
@@ -291,11 +355,14 @@ def verify_staged(staged: Path, info: UpdateInfo) -> None:
                     raise UpdateError("update_err_changed")
                 digest.update(chunk)
         _check(staged, info, size, digest.hexdigest())
+        if signing.enabled():
+            _check_signature(info, digest.hexdigest(), signature_path(staged).read_bytes()[:signing.MAX_SIGNATURE_FILE + 1])
     except (UpdateError, OSError) as exc:
-        try:
-            staged.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for path in (staged, signature_path(staged)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise UpdateError("update_err_changed") from exc
 
 
@@ -357,6 +424,10 @@ def install(staged: Path, exe: Path, info: UpdateInfo) -> None:
         except OSError:
             pass
         raise UpdateError("update_err_write", str(exc)) from exc
+    try:
+        signature_path(staged).unlink(missing_ok=True)
+    except OSError:
+        pass  # retiré au prochain démarrage / removed at the next start
 
 
 def restart(exe: Path) -> None:

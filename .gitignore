@@ -8,3 +8,6 @@ venv/
 dist/
 work/
 build/
+
+# Clé privée de signature : jamais dans le dépôt / Private signing key: never in the repository
+*.pem

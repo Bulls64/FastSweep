@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 from fastsweep import backdrop, cleanup, dialogs, glyphs, history, i18n, icons, inventory, models, system, theme, uninstall, widgets, workers
-from fastsweep import about, restore_page, restore_points, update_ui, updater
+from fastsweep import about, restore_page, restore_points, signing, update_ui, updater
 from fastsweep import window as main_window
 
 
@@ -2361,6 +2361,164 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(updater.UpdateError) as caught:
                 updater.check_latest()
         self.assertEqual(caught.exception.key, "update_err_data")
+
+    # --- Signature des mises à jour / Update signing ----------------------------------------------------
+
+    SIG_URL = updater.DOWNLOAD_PREFIX + "v1.0.2/FastSweep.exe.sig"
+
+    def signing_key(self):
+        """Clé de test et fonction de vérification qui remplace CNG hors Windows. / Test key and a check standing in for CNG."""
+        try:
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import ec, utils
+        except ImportError:
+            self.skipTest("cryptography absent")
+        private = ec.generate_private_key(ec.SECP256R1())
+        numbers = private.public_key().public_numbers()
+        public = (numbers.x.to_bytes(32, "big") + numbers.y.to_bytes(32, "big")).hex()
+
+        def sign(version, sha256):
+            r, s_ = utils.decode_dss_signature(private.sign(signing.message(version, sha256), ec.ECDSA(hashes.SHA256())))
+            return base64.b64encode(r.to_bytes(32, "big") + s_.to_bytes(32, "big"))
+
+        def check(key, digest, signature):
+            point = ec.EllipticCurvePublicNumbers(int.from_bytes(key[:32], "big"), int.from_bytes(key[32:], "big"),
+                                                  ec.SECP256R1()).public_key()
+            der = utils.encode_dss_signature(int.from_bytes(signature[:32], "big"), int.from_bytes(signature[32:], "big"))
+            try:
+                point.verify(der, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+                return True
+            except InvalidSignature:
+                return False
+        return private, public, sign, check
+
+    def signed(self, public, check):
+        """Active la vérification avec la clé de test (CNG réel sous Windows). / Enables checking with the test key."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch.object(signing, "PUBLIC_KEY", public))
+        if sys.platform != "win32":
+            stack.enter_context(patch.object(signing, "verify_digest", check))
+        return stack
+
+    def test_signatures_are_checked_against_the_version_and_the_hash(self):
+        _private, public, sign, check = self.signing_key()
+        sha = hashlib.sha256(self.EXE).hexdigest()
+        with self.signed(public, check):
+            good = signing.decode_signature(sign("1.0.2", sha))
+            self.assertTrue(signing.verify("1.0.2", sha, good))
+            self.assertTrue(signing.verify("1.0.2", sha.upper(), good))
+            self.assertFalse(signing.verify("1.0.3", sha, good))  # autre version / other version
+            self.assertFalse(signing.verify("1.0.2", "0" * 64, good))  # autre fichier / other file
+            self.assertFalse(signing.verify("1.0.2", sha, bytes([good[0] ^ 1]) + good[1:]))
+            self.assertFalse(signing.verify("1.0.2", "pas une empreinte", good))
+        with patch.object(signing, "PUBLIC_KEY", "zz" * 64):
+            self.assertFalse(signing.verify("1.0.2", sha, good))  # clé mal formée : refus / malformed key: refused
+        for bad in (b"", b"pas du base64 !", base64.b64encode(b"x" * 63)):
+            with self.assertRaises(ValueError):
+                signing.decode_signature(bad)
+        self.assertFalse(signing.enabled())  # aucune clé par défaut dans les tests / no key by default in tests
+
+    @unittest.skipUnless(sys.platform == "win32", "CNG : Windows uniquement / Windows only")
+    def test_windows_cng_checks_real_signatures(self):
+        _private, public, sign, _check = self.signing_key()
+        sha = hashlib.sha256(b"abc").hexdigest()
+        raw = signing.decode_signature(sign("2.0", sha))
+        digest = hashlib.sha256(signing.message("2.0", sha)).digest()
+        key = bytes.fromhex(public)
+        self.assertTrue(signing.verify_digest(key, digest, raw))
+        self.assertFalse(signing.verify_digest(key, digest, raw[:-1] + bytes([raw[-1] ^ 1])))
+        self.assertFalse(signing.verify_digest(b"\x01" * 64, digest, raw))  # point hors courbe / point off the curve
+
+    def signed_download(self, info, signature, temporary):
+        target = Path(temporary) / "FastSweep.exe.new"
+        def answer(request):
+            if request.full_url == self.SIG_URL:
+                return self.FakeResponse(signature)
+            return self.FakeResponse(self.EXE)
+        error = None
+        with patch.object(updater, "open_url", side_effect=answer):
+            try:
+                updater.download(info, target)
+            except updater.UpdateError as exc:
+                error = exc.key
+        return error, sorted(path.name for path in Path(temporary).iterdir()), target
+
+    def test_signed_updates_need_a_valid_signature(self):
+        _private, public, sign, check = self.signing_key()
+        sha = hashlib.sha256(self.EXE).hexdigest()
+        with self.signed(public, check):
+            data = self.release_json()
+            with self.with_release(data):
+                self.assertFalse(updater.check_latest("1.0.1").installable)  # signature pas encore jointe / not attached yet
+            data["assets"].append({"name": "FastSweep.exe.sig", "state": "uploaded", "size": 89, "browser_download_url": self.SIG_URL})
+            with self.with_release(data):
+                info = updater.check_latest("1.0.1")
+            self.assertEqual((info.signature_url, info.installable), (self.SIG_URL, True))
+            for label, signature, changes, key in (
+                ("bonne", sign("1.0.2", sha), {}, None),
+                ("autre version", sign("1.0.1", sha), {}, "update_err_signature"),
+                ("illisible", b"!!!", {}, "update_err_signature"),
+                ("trop grande", b"A" * 5000, {}, "update_err_signature"),
+                ("absente", sign("1.0.2", sha), dict(signature_url=""), "update_err_unsigned"),
+            ):
+                with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                    error, leftovers, target = self.signed_download(self.info(**{"signature_url": self.SIG_URL, **changes}), signature, temporary)
+                    self.assertEqual(error, key)
+                    if key is None:
+                        self.assertEqual(leftovers, ["FastSweep.exe.new", "FastSweep.exe.new.sig"])
+                        exe = Path(temporary) / "FastSweep.exe"
+                        exe.write_bytes(b"MZ-old")
+                        updater.install(target, exe, self.info(signature_url=self.SIG_URL))
+                        self.assertEqual(exe.read_bytes(), self.EXE)
+                        self.assertFalse(updater.signature_path(target).exists())  # retirée avec le fichier / removed with the file
+                    else:
+                        self.assertEqual(leftovers, [])  # rien gardé / nothing kept
+
+    def test_install_checks_the_signature_again(self):
+        _private, public, sign, check = self.signing_key()
+        sha = hashlib.sha256(self.EXE).hexdigest()
+        with self.signed(public, check):
+            for label, signature in (("modifiée", sign("1.0.3", sha)), ("supprimée", None)):
+                with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                    exe, staged = self.make_install(temporary)
+                    if signature is not None:
+                        updater.signature_path(staged).write_bytes(signature)
+                    with self.assertRaises(updater.UpdateError) as caught:
+                        updater.install(staged, exe, self.info())
+                    self.assertEqual(caught.exception.key, "update_err_changed")
+                    self.assertEqual(sorted(path.name for path in Path(temporary).iterdir()), ["FastSweep.exe"])
+                    self.assertEqual(exe.read_bytes(), b"MZ-old")
+
+    def test_the_release_tool_signs_what_fastsweep_checks(self):
+        private, public, _sign, check = self.signing_key()
+        from cryptography.hazmat.primitives import serialization
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("release_signing", Path(__file__).resolve().parents[1] / "tools" / "release_signing.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption()).decode()
+        self.assertEqual(tool.message("1.2.3", "AB" * 32), signing.message("1.2.3", "AB" * 32))  # même format / same format
+        with tempfile.TemporaryDirectory() as temporary:
+            module = Path(temporary) / "signing.py"
+            module.write_text('PUBLIC_KEY = ""\n', encoding="utf-8")
+            exe = Path(temporary) / "FastSweep.exe"
+            exe.write_bytes(self.EXE)
+            with patch.object(tool, "SIGNING_MODULE", module), patch.dict(os.environ, {"FASTSWEEP_SIGNING_KEY": pem}):
+                with self.assertRaises(SystemExit):
+                    tool.sign(str(exe))  # pas de clé publique dans FastSweep : refus / no public key in FastSweep: refused
+                module.write_text(f'PUBLIC_KEY = "{"ab" * 64}"\n', encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    tool.sign(str(exe))  # clé publique d'une autre clé / public key of another key
+                module.write_text(f'PUBLIC_KEY = "{public}"\n', encoding="utf-8")
+                with patch("sys.stdout", io.StringIO()):
+                    tool.sign(str(exe))
+            raw = signing.decode_signature(exe.with_name("FastSweep.exe.sig").read_bytes())
+        with self.signed(public, check):
+            from fastsweep import __version__
+            self.assertTrue(signing.verify(__version__, hashlib.sha256(self.EXE).hexdigest(), raw))
 
     REG_HEADER = "Windows Registry Editor Version 5.00\r\n\r\n"
 
