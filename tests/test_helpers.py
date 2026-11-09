@@ -2506,7 +2506,8 @@ class HelperTests(unittest.TestCase):
             module.write_text('PUBLIC_KEY = ""\n', encoding="utf-8")
             exe = Path(temporary) / "FastSweep.exe"
             exe.write_bytes(self.EXE)
-            with patch.object(tool, "SIGNING_MODULE", module), patch.dict(os.environ, {"FASTSWEEP_SIGNING_KEY": pem}):
+            with patch.object(tool, "SIGNING_MODULE", module), patch.dict(os.environ, {"FASTSWEEP_SIGNING_KEY": pem}), \
+                    patch("sys.stderr", io.StringIO()):
                 with self.assertRaises(SystemExit):
                     tool.sign(str(exe))  # pas de clé publique dans FastSweep : refus / no public key in FastSweep: refused
                 module.write_text(f'PUBLIC_KEY = "{"ab" * 64}"\n', encoding="utf-8")
