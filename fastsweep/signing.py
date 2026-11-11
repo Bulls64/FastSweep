@@ -29,7 +29,7 @@ from .system import is_windows, system_dll
 
 # Clé publique ECDSA P-256 : X puis Y, 32 octets chacun, en hexadécimal. Vide : vérification désactivée.
 # ECDSA P-256 public key: X then Y, 32 bytes each, in hexadecimal. Empty: checking disabled.
-PUBLIC_KEY = ""
+PUBLIC_KEY = "9bd11365f3209bb07a8a4fe9d7cb50ca700da913388586277f64d65aed471d3e867d3e17c36e22dee134d1303d223bc2d0610576ad9dcb8c84ffe121165b83de"
 
 SIGNATURE_SUFFIX = ".sig"
 MAX_SIGNATURE_FILE = 1024  # une signature encodée fait 88 caractères / an encoded signature is 88 characters
