@@ -25,6 +25,9 @@ from fastsweep import about, restore_page, restore_points, signing, update_ui, u
 from fastsweep import window as main_window
 
 
+BUILT_IN_KEY = signing.PUBLIC_KEY  # la clé réellement livrée, avant que les tests la neutralisent / the shipped key, before tests neutralize it
+
+
 class HelperTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -48,7 +51,11 @@ class HelperTests(unittest.TestCase):
         QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, cls.settings_dir.name)
         ini = lambda: QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope,
                                 main_window.SETTINGS_ORG, main_window.SETTINGS_APP)
+        # La vraie clé de signature est intégrée à signing.py : les tests de mise à jour travaillent sans signature,
+        # sauf ceux qui activent leur propre clé de test. / The real signing key is built into signing.py: update
+        # tests work without a signature, except those that enable their own test key.
         cls.class_patches = [patch.object(main_window, "open_settings", ini),
+                             patch.object(signing, "PUBLIC_KEY", ""),
                              patch.dict(os.environ, {"LOCALAPPDATA": cls.data_dir.name})]
         for item in cls.class_patches:
             item.start()
@@ -2419,6 +2426,17 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 signing.decode_signature(bad)
         self.assertFalse(signing.enabled())  # aucune clé par défaut dans les tests / no key by default in tests
+
+    def test_the_shipped_public_key_is_a_valid_p256_point(self):
+        # Une clé vide désactiverait la vérification des signatures : elle ne doit pas être livrée vide.
+        # An empty key would switch signature checking off: it must not be shipped empty.
+        self.assertRegex(BUILT_IN_KEY, r"^[0-9a-f]{128}$")
+        try:
+            from cryptography.hazmat.primitives.asymmetric import ec
+        except ImportError:
+            self.skipTest("cryptography absent")
+        key = bytes.fromhex(BUILT_IN_KEY)
+        ec.EllipticCurvePublicNumbers(int.from_bytes(key[:32], "big"), int.from_bytes(key[32:], "big"), ec.SECP256R1()).public_key()
 
     @unittest.skipUnless(sys.platform == "win32", "CNG : Windows uniquement / Windows only")
     def test_windows_cng_checks_real_signatures(self):
