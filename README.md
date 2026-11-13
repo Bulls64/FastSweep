@@ -79,7 +79,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 
 ### Requirements
 
-- Windows 10 or 11, x64 or ARM64
+- Windows 10 or 11 on x64 PCs, Windows 11 on ARM PCs
 - Python 3.10 or later (to run from source)
 - Administrator rights for restore points and machine-wide registry keys. The **Relaunch as administrator** button shows the UAC prompt.
 - System Protection turned on, for restore points
@@ -208,7 +208,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 
 ### Configuration requise
 
-- Windows 10 ou 11, x64 ou ARM64
+- Windows 10 ou 11 sur PC x64, Windows 11 sur PC ARM
 - Python 3.10 ou plus récent (pour lancer depuis les sources)
 - Droits administrateur pour les points de restauration et les clés de registre de l'ordinateur. Le bouton **Relancer en administrateur** affiche l'invite UAC.
 - Protection du système activée, pour les points de restauration
