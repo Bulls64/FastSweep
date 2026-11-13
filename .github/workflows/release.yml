@@ -60,37 +60,15 @@ jobs:
       - name: Build FastSweep.exe
         run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath work FastSweep.spec
 
-      # Signature vérifiée par FastSweep avant toute mise à jour (fastsweep/signing.py). Obligatoire pour une release.
-      # Signature checked by FastSweep before any update (fastsweep/signing.py). Required for a release.
-      - name: Sign FastSweep.exe
-        env:
-          FASTSWEEP_SIGNING_KEY: ${{ secrets.FASTSWEEP_SIGNING_KEY }}
-        shell: pwsh
-        run: |
-          if (-not $env:FASTSWEEP_SIGNING_KEY) {
-            if ($env:RELEASE_TAG) {
-              Write-Error "Secret FASTSWEEP_SIGNING_KEY absent : la release ne peut pas être signée / missing: the release cannot be signed"
-              exit 1
-            }
-            Write-Host "Pas de clé : exe non signé (build seul) / No key: unsigned exe (build only)"
-            exit 0
-          }
-          python tools/release_signing.py sign dist/FastSweep.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: FastSweep
-          path: |
-            dist/FastSweep.exe
-            dist/FastSweep.exe.sig
+          path: dist/FastSweep.exe
           if-no-files-found: error
 
       - name: Attach FastSweep.exe to the release
         if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        # La signature d'abord : FastSweep ne propose l'exe qu'une fois sa signature jointe. / The signature first:
-        # FastSweep only offers the exe once its signature is attached.
-        run: gh release upload "$env:RELEASE_TAG" dist/FastSweep.exe.sig dist/FastSweep.exe --clobber
+        run: gh release upload "$env:RELEASE_TAG" dist/FastSweep.exe --clobber

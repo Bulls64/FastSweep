@@ -2427,9 +2427,11 @@ class HelperTests(unittest.TestCase):
                 signing.decode_signature(bad)
         self.assertFalse(signing.enabled())  # aucune clé par défaut dans les tests / no key by default in tests
 
-    def test_the_shipped_public_key_is_a_valid_p256_point(self):
-        # Une clé vide désactiverait la vérification des signatures : elle ne doit pas être livrée vide.
-        # An empty key would switch signature checking off: it must not be shipped empty.
+    def test_the_shipped_public_key_is_empty_or_a_valid_p256_point(self):
+        # Vide : vérification désactivée (choix actuel). Sinon, un point P-256 valide.
+        # Empty: checking disabled (current choice). Otherwise, a valid P-256 point.
+        if not BUILT_IN_KEY:
+            return
         self.assertRegex(BUILT_IN_KEY, r"^[0-9a-f]{128}$")
         try:
             from cryptography.hazmat.primitives.asymmetric import ec

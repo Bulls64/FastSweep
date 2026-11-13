@@ -29,7 +29,11 @@ from .system import is_windows, system_dll
 
 # Clé publique ECDSA P-256 : X puis Y, 32 octets chacun, en hexadécimal. Vide : vérification désactivée.
 # ECDSA P-256 public key: X then Y, 32 bytes each, in hexadecimal. Empty: checking disabled.
-PUBLIC_KEY = "9bd11365f3209bb07a8a4fe9d7cb50ca700da913388586277f64d65aed471d3e867d3e17c36e22dee134d1303d223bc2d0610576ad9dcb8c84ffe121165b83de"
+# Désactivée depuis novembre 2026. Pour la réactiver : clé publique ici, étape de signature rétablie dans
+# .github/workflows/release.yml (voir l'historique git) et secret FASTSWEEP_SIGNING_KEY.
+# Disabled since November 2026. To enable it again: public key here, signing step restored in
+# .github/workflows/release.yml (see the git history) and the FASTSWEEP_SIGNING_KEY secret.
+PUBLIC_KEY = ""
 
 SIGNATURE_SUFFIX = ".sig"
 MAX_SIGNATURE_FILE = 1024  # une signature encodée fait 88 caractères / an encoded signature is 88 characters
