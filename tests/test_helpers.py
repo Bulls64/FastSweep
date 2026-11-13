@@ -1477,6 +1477,63 @@ class HelperTests(unittest.TestCase):
                 self.assertEqual(error, key)
                 self.assertEqual((leftovers, content), ([], None))
 
+    @staticmethod
+    def pe_file(machine: int) -> bytes:
+        """Début d'exécutable PE minimal pour ce code machine. / Minimal PE executable start for this machine code."""
+        header = bytearray(b"MZ" + b"\x00" * 0x7E)
+        header[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        return bytes(header) + b"PE\0\0" + machine.to_bytes(2, "little") + b"\x00" * 4000
+
+    def test_download_refuses_an_exe_built_for_another_processor(self):
+        self.assertEqual(updater.pe_machine(self.pe_file(0xAA64)), 0xAA64)
+        self.assertIsNone(updater.pe_machine(self.EXE))  # en-tête PE illisible : pas de refus sur ce seul critère / unreadable PE header
+        self.assertIsNone(updater.pe_machine(b"MZ"))
+        for label, machine, architecture, key in (
+            ("x64 attendu, x64 reçu", 0x8664, "x64", None),
+            ("ARM64 attendu, ARM64 reçu", 0xAA64, "arm64", None),
+            ("x64 attendu, ARM64 reçu", 0xAA64, "x64", "update_err_arch"),
+            ("ARM64 attendu, x64 reçu", 0x8664, "arm64", "update_err_arch"),
+        ):
+            data = self.pe_file(machine)
+            info = self.info(size=len(data), sha256=hashlib.sha256(data).hexdigest(), architecture=architecture)
+            with self.subTest(label):
+                error, leftovers, _content = self.download(data=data, info=info)
+                self.assertEqual(error, key)
+                self.assertEqual(leftovers, [] if key else ["FastSweep.exe.new"])
+
+    def test_each_processor_gets_its_own_executable(self):
+        arm_url = updater.DOWNLOAD_PREFIX + "v1.0.2/FastSweep-arm64.exe"
+        both = self.release_json()
+        both["assets"].append({"name": "FastSweep-arm64.exe", "state": "uploaded", "size": 1234,
+                               "browser_download_url": arm_url, "digest": "sha256:" + "ab" * 32})
+        for label, machine, data, url, architecture, size in (
+            ("PC x64", "x64", both, self.ASSET_URL, "x64", len(self.EXE)),
+            ("PC ARM64", "arm64", both, arm_url, "arm64", 1234),
+            ("PC ARM64, exe ARM64 absent : x64 émulé", "arm64", self.release_json(), self.ASSET_URL, "x64", len(self.EXE)),
+            ("PC x86 : x64 par défaut", "x86", both, self.ASSET_URL, "x64", len(self.EXE)),
+        ):
+            with self.subTest(label), self.with_release(data), patch.object(updater, "machine_architecture", return_value=machine):
+                info = updater.check_latest("1.0.1")
+                self.assertEqual((info.url, info.architecture, info.size), (url, architecture, size))
+                self.assertTrue(info.installable)
+        with self.with_release(self.release_json(assets=[{"name": "FastSweep-arm64.exe", "state": "uploaded",
+                                                           "browser_download_url": arm_url}])), \
+                patch.object(updater, "machine_architecture", return_value="x64"):
+            self.assertFalse(updater.check_latest("1.0.1").installable)  # jamais l'exe ARM64 sur un PC x64 / never on x64
+
+    def test_architecture_is_reported_for_bug_reports(self):
+        for process, machine, label in (("x64", "x64", "x64"), ("arm64", "arm64", "ARM64"), ("x64", "arm64", "x64 (ARM64)")):
+            with self.subTest(label), patch.object(system, "process_architecture", return_value=process), \
+                    patch.object(system, "machine_architecture", return_value=machine):
+                self.assertEqual(system.architecture_label(), label)
+        self.assertIn(system.process_architecture(), ("x64", "arm64", "x86"))
+        self.assertIn(system.machine_architecture(), ("x64", "arm64", "x86"))
+        self.assertIn(system.architecture_label(), about.diagnostics_text())
+
+    def test_program_files_arm_is_protected(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"PROGRAMFILES(ARM)": temporary}):
+            self.assertIn(cleanup._comparable(temporary), cleanup.protected_folders())
+
     def test_download_can_be_cancelled(self):
         stop = threading.Event()
         stop.set()

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVB
 from . import __version__
 from .glyphs import bolt_pixmap, glyph_icon
 from .i18n import APP_NAME
-from .system import app_data_dir, is_admin
+from .system import app_data_dir, architecture_label, is_admin
 from .theme import colors
 from .updater import REPO
 
@@ -48,6 +48,7 @@ def environment() -> dict[str, str]:
     """
     return {
         "python": platform.python_version(),
+        "architecture": architecture_label(),
         "qt": f"PySide6 {PySide6.__version__} · Qt {qVersion()}",
         "windows": windows_version(),
         "mode": "exe" if getattr(sys, "frozen", False) else "source",
@@ -64,7 +65,7 @@ def diagnostics_text() -> str:
     env = environment()
     return "\n".join((
         f"{APP_NAME} {__version__} ({env['mode']})",
-        f"Windows: {env['windows']}",
+        f"Windows: {env['windows']} · {env['architecture']}",
         f"Python: {env['python']}",
         f"Qt: {env['qt']}",
         f"Administrator: {env['admin']}",
@@ -154,7 +155,7 @@ class AboutSection(QWidget):
             "about_run": self.t("about_mode_" + env["mode"]),
             "about_license": f"{LICENSE_NAME} — © 2026 {AUTHOR}",
             "about_repo": REPO_URL,
-            "about_windows": env["windows"] + (" · " + self.t("about_admin") if env["admin"] == "yes" else ""),
+            "about_windows": env["windows"] + " · " + env["architecture"] + (" · " + self.t("about_admin") if env["admin"] == "yes" else ""),
             "about_python": f"{env['python']} · {env['qt']}",
             "about_data": env["data"],
         }

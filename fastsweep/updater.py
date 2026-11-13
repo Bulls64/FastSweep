@@ -23,13 +23,18 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import __version__, signing
-from .system import is_windows
+from .system import is_windows, machine_architecture
 
 REPO = "Bulls64/FastSweep"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
-ASSET_NAME = "FastSweep.exe"
-SIGNATURE_NAME = ASSET_NAME + signing.SIGNATURE_SUFFIX
+ASSET_NAME = "FastSweep.exe"  # x64
+# Un exécutable par architecture ; un PC ARM64 prend l'exe ARM64, ou à défaut l'exe x64 qu'il fait tourner en émulation.
+# One executable per architecture; an ARM64 PC takes the ARM64 exe, or failing that the x64 exe it runs emulated.
+ASSET_NAMES = {"x64": ASSET_NAME, "arm64": "FastSweep-arm64.exe"}
+ASSET_PREFERENCES = {"arm64": ("arm64", "x64"), "x64": ("x64",)}
+# Code machine attendu dans l'en-tête PE de chaque exécutable. / Machine code expected in each executable's PE header.
+PE_MACHINES = {"x64": 0x8664, "arm64": 0xAA64}
 # Seul un fichier publié par ce dépôt est téléchargé ; GitHub redirige ensuite vers son stockage (githubusercontent.com).
 # Only a file published by this repository is downloaded; GitHub then redirects to its storage (githubusercontent.com).
 DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
@@ -67,6 +72,7 @@ class UpdateInfo:
     newer: bool  # plus récente que la version installée / newer than the installed version
     published: str = ""  # date de publication ISO 8601 donnée par GitHub / ISO 8601 publication date from GitHub
     signature_url: str = ""  # lien de FastSweep.exe.sig, "" s'il n'est pas joint / link of FastSweep.exe.sig, "" if not attached
+    architecture: str = "x64"  # architecture de l'exe choisi / architecture of the chosen exe
 
     @property
     def installable(self) -> bool:
@@ -189,33 +195,34 @@ def check_latest(current: str = __version__) -> UpdateInfo:
     numbers = parse_version(tag)
     if not numbers:
         raise UpdateError("update_err_data")
-    url, size, sha256, signature_url = "", 0, "", ""
-    found = set()
+    assets: dict[str, dict] = {}
     for asset in data.get("assets") or []:
-        if not isinstance(asset, dict) or asset.get("state", "uploaded") != "uploaded":
-            continue
-        name = str(asset.get("name", "")).casefold()
-        if name in found:
-            continue  # seul le premier compte / only the first one counts
-        link = str(asset.get("browser_download_url") or "")
-        link = link if link.startswith(DOWNLOAD_PREFIX) else ""
-        if name == SIGNATURE_NAME.casefold():
-            found.add(name)
-            signature_url = link
-        elif name == ASSET_NAME.casefold():
-            found.add(name)
-            url = link
-            try:
-                size = max(int(asset.get("size") or 0), 0)
-            except (TypeError, ValueError):
-                size = 0
-            digest = str(asset.get("digest") or "").lower()
-            sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else ""
+        if isinstance(asset, dict) and asset.get("state", "uploaded") == "uploaded":
+            assets.setdefault(str(asset.get("name", "")).casefold(), asset)  # seul le premier compte / only the first one counts
+    architecture = ASSET_PREFERENCES.get(machine_architecture(), ("x64",))[0]
+    for candidate in ASSET_PREFERENCES.get(machine_architecture(), ("x64",)):
+        if ASSET_NAMES[candidate].casefold() in assets:
+            architecture = candidate
+            break
+    name = ASSET_NAMES[architecture]
+    exe, signature = assets.get(name.casefold(), {}), assets.get((name + signing.SIGNATURE_SUFFIX).casefold(), {})
+    url, signature_url = _download_link(exe), _download_link(signature)
+    try:
+        size = max(int(exe.get("size") or 0), 0)
+    except (TypeError, ValueError):
+        size = 0
+    digest = str(exe.get("digest") or "").lower()
+    sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else ""
     page = str(data.get("html_url") or "")
     version = ".".join(str(part) for part in numbers)
     return UpdateInfo(version, tag, str(data.get("body") or "").strip(), url, size, sha256,
                       page if page.startswith(f"https://github.com/{REPO}/") else RELEASES_URL,
-                      is_newer(version, current), str(data.get("published_at") or ""), signature_url)
+                      is_newer(version, current), str(data.get("published_at") or ""), signature_url, architecture)
+
+
+def _download_link(asset: dict) -> str:
+    link = str(asset.get("browser_download_url") or "")
+    return link if link.startswith(DOWNLOAD_PREFIX) else ""
 
 
 def download(info: UpdateInfo, destination: Path, progress=None, stop=None) -> Path:
@@ -333,8 +340,28 @@ def _check(path: Path, info: UpdateInfo, size: int, sha256: str) -> None:
     if info.sha256 and sha256 != info.sha256:
         raise UpdateError("update_err_hash")
     with path.open("rb") as check:
-        if check.read(2) != b"MZ":  # un exécutable Windows commence par « MZ » / a Windows executable starts with "MZ"
-            raise UpdateError("update_err_notexe")
+        header = check.read(4096)
+    if header[:2] != b"MZ":  # un exécutable Windows commence par « MZ » / a Windows executable starts with "MZ"
+        raise UpdateError("update_err_notexe")
+    expected = PE_MACHINES.get(info.architecture)
+    machine = pe_machine(header)
+    if expected and machine is not None and machine != expected:
+        # Un exe ARM64 ne démarre pas sur un PC x64 : il ne doit jamais remplacer FastSweep.
+        # An ARM64 exe does not start on an x64 PC: it must never replace FastSweep.
+        raise UpdateError("update_err_arch", f"0x{machine:04X}")
+
+
+def pe_machine(header: bytes) -> int | None:
+    """Code machine de l'en-tête PE, None si l'en-tête n'est pas lisible dans ``header``.
+
+    Machine code of the PE header, None when the header cannot be read in ``header``.
+    """
+    if len(header) < 0x40:
+        return None
+    offset = int.from_bytes(header[0x3C:0x40], "little")
+    if offset + 6 > len(header) or header[offset:offset + 4] != b"PE\0\0":
+        return None
+    return int.from_bytes(header[offset + 4:offset + 6], "little")
 
 
 def verify_staged(staged: Path, info: UpdateInfo) -> None:

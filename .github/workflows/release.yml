@@ -1,7 +1,9 @@
-# Construit FastSweep.exe et le joint à la release quand une release est publiée sur GitHub.
+# Construit FastSweep.exe (x64) et FastSweep-arm64.exe (ARM64 natif) et les joint à la release quand une release
+# est publiée sur GitHub. Chaque exe est construit sur un runner de son architecture.
 # Lancé à la main (onglet Actions), il construit l'exe depuis la branche choisie ; si on indique un tag, il
 # le joint aussi à cette release (utile quand le workflow automatique a échoué).
-# Builds FastSweep.exe and attaches it to the release when a GitHub release is published.
+# Builds FastSweep.exe (x64) and FastSweep-arm64.exe (native ARM64) and attaches them to the release when a
+# GitHub release is published. Each exe is built on a runner of its own architecture.
 # Run by hand (Actions tab), it builds the exe from the chosen branch; if a tag is given, it also attaches
 # it to that release (useful when the automatic workflow failed).
 
@@ -22,8 +24,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30  # un blocage s'arrête seul / a hang stops by itself
+    strategy:
+      fail-fast: false  # un échec ARM64 n'empêche pas de publier l'exe x64 / an ARM64 failure does not stop the x64 exe
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            exe: FastSweep.exe
+          - arch: arm64
+            runner: windows-11-arm
+            exe: FastSweep-arm64.exe
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
@@ -34,7 +46,18 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.13"
+          architecture: ${{ matrix.arch }}
           cache: pip
+
+      - name: Check the Python architecture
+        shell: pwsh
+        run: |
+          $platform = python -c "import sysconfig; print(sysconfig.get_platform())"
+          $expected = @{ x64 = "win-amd64"; arm64 = "win-arm64" }["${{ matrix.arch }}"]
+          if ($platform -ne $expected) {
+            Write-Error "Python $platform au lieu de $expected / instead of $expected"
+            exit 1
+          }
 
       - name: Check that the tag matches __version__
         if: env.RELEASE_TAG != ''
@@ -57,18 +80,25 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
-      - name: Build FastSweep.exe
-        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath work FastSweep.spec
+      - name: Build ${{ matrix.exe }}
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --distpath dist --workpath work FastSweep.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ("${{ matrix.exe }}" -ne "FastSweep.exe") { Move-Item dist/FastSweep.exe "dist/${{ matrix.exe }}" }
+          # L'en-tête PE doit annoncer la bonne architecture (FastSweep le vérifie aussi avant une mise à jour).
+          # The PE header must announce the right architecture (FastSweep also checks it before an update).
+          python -c "import sys; d = open(sys.argv[1], 'rb').read(4096); o = int.from_bytes(d[60:64], 'little'); m = int.from_bytes(d[o+4:o+6], 'little'); e = {'x64': 0x8664, 'arm64': 0xAA64}[sys.argv[2]]; print(hex(m)); sys.exit(m != e)" "dist/${{ matrix.exe }}" "${{ matrix.arch }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: FastSweep
-          path: dist/FastSweep.exe
+          name: FastSweep-${{ matrix.arch }}
+          path: dist/${{ matrix.exe }}
           if-no-files-found: error
 
-      - name: Attach FastSweep.exe to the release
+      - name: Attach ${{ matrix.exe }} to the release
         if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$env:RELEASE_TAG" dist/FastSweep.exe --clobber
+        run: gh release upload "$env:RELEASE_TAG" "dist/${{ matrix.exe }}" --clobber

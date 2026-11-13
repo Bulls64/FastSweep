@@ -59,7 +59,7 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 - Acrylic translucency on Windows 11 22H2 and later, with a **background opacity** slider in Settings (0% shows the most of what is behind, 100% makes backgrounds solid; text stays sharp). Older versions keep the same colors on opaque backgrounds.
 - A **Settings** page groups theme, language, background opacity, updates and the About section.
 - A **What's new** window lists the latest GitHub release notes (date, compact, in the interface language). It opens once on the first start of a new version (can be turned off) and on demand from Settings; if that release is not installed yet, it offers the update.
-- **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from Settings; the Settings entry lights up when a new version is available. It shows what's new, downloads `FastSweep.exe`, verifies it (size, SHA-256 checksum, file type, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
+- **Updates from GitHub**: FastSweep checks the latest release at startup (can be turned off), or on demand from Settings; the Settings entry lights up when a new version is available. It shows what's new, downloads the executable for the PC's processor (x64 or ARM64), verifies it (size, SHA-256 checksum, file type and processor, GitHub address), swaps it in and restarts. The old version is put back if anything fails. An optional setting installs updates automatically, without asking.
 - Local history of every operation, which can be exported to JSON.
 - Uninstall options (restore point, silent mode, automatic scan) are remembered between sessions.
 - An About section in Settings with the version, license, repository link, a shortcut to report a problem, and a **Copy details** button that puts the version and environment (Windows, Python, Qt) on the clipboard, ready to paste into an issue.
@@ -79,14 +79,14 @@ FastSweep lists the desktop programs and Microsoft Store apps installed on your 
 
 ### Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11, x64 or ARM64
 - Python 3.10 or later (to run from source)
 - Administrator rights for restore points and machine-wide registry keys. The **Relaunch as administrator** button shows the UAC prompt.
 - System Protection turned on, for restore points
 
 ### Download
 
-`FastSweep.exe` is attached to each [release](https://github.com/Bulls64/FastSweep/releases): download it and run it, no installation needed. Once installed, FastSweep updates itself from these releases (see **Updates from GitHub** above). Only the downloaded executable can replace itself: a copy run from source reports new versions but does not install them, and the update needs write access to the folder holding `FastSweep.exe`.
+Two executables are attached to each [release](https://github.com/Bulls64/FastSweep/releases): `FastSweep.exe` for usual PCs (x64) and `FastSweep-arm64.exe`, native for Windows on ARM PCs (Snapdragon…). Download the one for your PC and run it, no installation needed. On an ARM PC, the x64 version also works, emulated, and switches to the native version at its next update. Once installed, FastSweep updates itself from these releases (see **Updates from GitHub** above). Only the downloaded executable can replace itself: a copy run from source reports new versions but does not install them, and the update needs write access to the folder holding `FastSweep.exe`.
 
 ### Running from source
 
@@ -99,7 +99,7 @@ py main.py
 
 ### Building the executable
 
-Run `build.bat` by double-clicking it or from a terminal. It checks Python, installs the dependencies and PyInstaller if needed, runs the tests, then builds `dist\FastSweep.exe`. Use `build.bat --sans-tests` to skip the tests.
+Run `build.bat` by double-clicking it or from a terminal. It checks Python, installs the dependencies and PyInstaller if needed, runs the tests, then builds `dist\FastSweep.exe`. Use `build.bat --sans-tests` to skip the tests. The exe takes the architecture of the Python used: an ARM64 Python (3.11 or later) on a Windows on ARM PC builds a native ARM64 exe.
 
 `build.ps1` does the same thing (`-SansTests` to skip the tests). If PowerShell refuses to run it because it is not signed, use `build.bat` or `powershell -ExecutionPolicy Bypass -File .\build.ps1`.
 
@@ -188,7 +188,7 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 - Transparence Acrylic sous Windows 11 22H2 et plus récent, avec un curseur **d'opacité des fonds** dans les Réglages (0 % laisse le plus voir l'arrière-plan, 100 % rend les fonds pleins ; le texte reste net). Les versions plus anciennes gardent les mêmes couleurs sur des fonds opaques.
 - Une page **Réglages** regroupe le thème, la langue, l'opacité des fonds, les mises à jour et la section « À propos ».
 - Une fenêtre **Nouveautés** liste les notes de la dernière release GitHub (date, rendu compact, langue de l'interface). Elle s'ouvre une fois au premier démarrage d'une nouvelle version (désactivable) et à la demande depuis les Réglages ; si cette release n'est pas encore installée, elle propose la mise à jour.
-- **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis les Réglages ; l'entrée « Réglages » s'allume quand une nouvelle version est disponible. Il affiche les nouveautés, télécharge `FastSweep.exe`, le vérifie (taille, somme SHA-256, type de fichier, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
+- **Mises à jour depuis GitHub** : FastSweep cherche la dernière release au démarrage (désactivable) ou à la demande depuis les Réglages ; l'entrée « Réglages » s'allume quand une nouvelle version est disponible. Il affiche les nouveautés, télécharge l'exécutable adapté au processeur du PC (x64 ou ARM64), le vérifie (taille, somme SHA-256, type de fichier et processeur, adresse GitHub), le remplace et se relance. L'ancienne version est remise en place si quelque chose échoue. Un réglage facultatif installe les mises à jour automatiquement, sans rien demander.
 - Historique local de toutes les opérations, exportable en JSON.
 - Les options de désinstallation (point de restauration, mode silencieux, analyse automatique) sont mémorisées d'une session à l'autre.
 - Une section « À propos » dans les Réglages, avec la version, la licence, le lien vers le dépôt, un raccourci pour signaler un problème et un bouton **Copier les informations** qui place la version et l'environnement (Windows, Python, Qt) dans le presse-papiers, prêts à coller dans un ticket.
@@ -208,14 +208,14 @@ FastSweep liste les programmes classiques et les applications Microsoft Store in
 
 ### Configuration requise
 
-- Windows 10 ou 11
+- Windows 10 ou 11, x64 ou ARM64
 - Python 3.10 ou plus récent (pour lancer depuis les sources)
 - Droits administrateur pour les points de restauration et les clés de registre de l'ordinateur. Le bouton **Relancer en administrateur** affiche l'invite UAC.
 - Protection du système activée, pour les points de restauration
 
 ### Téléchargement
 
-`FastSweep.exe` est joint à chaque [release](https://github.com/Bulls64/FastSweep/releases) : téléchargez-le et lancez-le, sans installation. Ensuite, FastSweep se met à jour tout seul depuis ces releases (voir **Mises à jour depuis GitHub** ci-dessus). Seul l'exécutable téléchargé peut se remplacer lui-même : une copie lancée depuis les sources signale les nouvelles versions sans les installer, et la mise à jour demande l'accès en écriture au dossier qui contient `FastSweep.exe`.
+Deux exécutables sont joints à chaque [release](https://github.com/Bulls64/FastSweep/releases) : `FastSweep.exe` pour les PC courants (x64) et `FastSweep-arm64.exe`, natif pour les PC Windows sur ARM (Snapdragon…). Téléchargez celui de votre PC et lancez-le, sans installation. Sur un PC ARM, la version x64 fonctionne aussi, en émulation, et passe à la version native à sa prochaine mise à jour. Ensuite, FastSweep se met à jour tout seul depuis ces releases (voir **Mises à jour depuis GitHub** ci-dessus). Seul l'exécutable téléchargé peut se remplacer lui-même : une copie lancée depuis les sources signale les nouvelles versions sans les installer, et la mise à jour demande l'accès en écriture au dossier qui contient `FastSweep.exe`.
 
 ### Lancer depuis les sources
 
@@ -228,7 +228,7 @@ py main.py
 
 ### Construire l'exécutable
 
-Lancez `build.bat`, par double-clic ou dans un terminal. Il vérifie Python, installe au besoin les dépendances et PyInstaller, lance les tests, puis construit `dist\FastSweep.exe`. `build.bat --sans-tests` saute les tests.
+Lancez `build.bat`, par double-clic ou dans un terminal. Il vérifie Python, installe au besoin les dépendances et PyInstaller, lance les tests, puis construit `dist\FastSweep.exe`. `build.bat --sans-tests` saute les tests. L'exe prend l'architecture du Python utilisé : un Python ARM64 (3.11 ou plus) sur un PC Windows sur ARM construit un exe ARM64 natif.
 
 `build.ps1` fait la même chose (`-SansTests` pour sauter les tests). Si PowerShell refuse de le lancer parce qu'il n'est pas signé, utilisez `build.bat` ou `powershell -ExecutionPolicy Bypass -File .\build.ps1`.
 

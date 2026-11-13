@@ -286,7 +286,7 @@ def protected_folders() -> set[str]:
     profile = env("USERPROFILE", "")
     paths = [env(name, "") for name in ("USERPROFILE", "PUBLIC", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "PROGRAMFILES",
                                         "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
-                                        "TEMP", "TMP", "ONEDRIVE")]
+                                        "PROGRAMFILES(ARM)", "COMMONPROGRAMFILES(ARM)", "TEMP", "TMP", "ONEDRIVE")]
     if profile:
         paths += [str(Path(profile) / name) for name in PROFILE_FOLDERS]
     for root in (env("LOCALAPPDATA", ""), env("APPDATA", ""), env("PROGRAMDATA", "")):
@@ -366,6 +366,7 @@ def file_candidates(app: AppEntry) -> list[FileCandidate]:
         str(Path(common) / start_menu) if common else "",
         os.environ.get("PROGRAMFILES", ""),
         os.environ.get("PROGRAMFILES(X86)", ""),
+        os.environ.get("PROGRAMFILES(ARM)", ""),  # Windows sur ARM / Windows on ARM
     )
     roots = [Path(os.path.expandvars(root)) for root in env_roots if root]
     for root in roots:

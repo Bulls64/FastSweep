@@ -10,11 +10,56 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 
 def is_windows() -> bool:
     return sys.platform == "win32"
+
+
+# Architectures prises en charge, d'après les codes machine Windows (IMAGE_FILE_MACHINE_*).
+# Supported architectures, from Windows machine codes (IMAGE_FILE_MACHINE_*).
+MACHINE_CODES = {0x8664: "x64", 0xAA64: "arm64", 0x014C: "x86"}
+
+
+def process_architecture() -> str:
+    """Architecture de ce Python (donc de FastSweep.exe) : "x64", "arm64" ou "x86".
+
+    Architecture of this Python (hence of FastSweep.exe): "x64", "arm64" or "x86".
+    """
+    platform_name = sysconfig.get_platform().casefold()
+    if platform_name.endswith("arm64") or platform_name.endswith("aarch64"):
+        return "arm64"
+    if platform_name.endswith("amd64") or platform_name.endswith("x86_64"):
+        return "x64"
+    return "x86" if platform_name in ("win32", "linux-i686") else "x64"
+
+
+def machine_architecture() -> str:
+    """Architecture du processeur : "arm64" même quand FastSweep x64 tourne en émulation sur un PC ARM.
+
+    Processor architecture: "arm64" even when x64 FastSweep runs emulated on an ARM PC.
+    """
+    if is_windows():
+        try:
+            kernel32 = system_dll("kernel32")
+            process, native = ctypes.c_ushort(), ctypes.c_ushort()
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.IsWow64Process2.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ushort),
+                                                 ctypes.POINTER(ctypes.c_ushort)]
+            if kernel32.IsWow64Process2(kernel32.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)):
+                return MACHINE_CODES.get(native.value, process_architecture())
+        except (AttributeError, OSError):
+            pass  # Windows trop ancien pour IsWow64Process2 / Windows too old for IsWow64Process2
+    return process_architecture()
+
+
+def architecture_label() -> str:
+    """« ARM64 », « x64 » ou « x64 (émulé sur ARM64) » pour les rapports. / For reports."""
+    process, machine = process_architecture(), machine_architecture()
+    label = process.upper() if process == "arm64" else process
+    return label if process == machine else f"{label} ({machine.upper() if machine == 'arm64' else machine})"
 
 
 # Windows cherche une DLL nommée sans chemin d'abord dans le dossier de l'exécutable : une DLL piégée posée à côté
